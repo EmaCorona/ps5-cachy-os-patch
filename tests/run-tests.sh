@@ -341,6 +341,17 @@ test_module_kde() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/kde.sh"
 
+    mkdir -p "$MOCK_ROOT/usr/bin"
+    cat << 'EOF' > "$MOCK_ROOT/usr/bin/steamos-session-select"
+#!/bin/bash
+set -euo pipefail
+        pkill -u steam plasmashell || true
+        if [[ -n "${XDG_SESSION_ID:-}" ]]; then
+            loginctl terminate-session "$XDG_SESSION_ID"
+        fi
+EOF
+    chmod 0755 "$MOCK_ROOT/usr/bin/steamos-session-select"
+
     module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     local tty_profile="$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
@@ -358,6 +369,16 @@ test_module_kde() {
         say_pass "Sessione predefinita impostata su desktop (KDE Plasma)"
     else
         say_fail "ps5-next-session mancante o non impostato su desktop"
+    fi
+
+    # Verifica patch steamos-session-select (stop portali, unset-environment e protezione loginctl terminate-session)
+    local sss_bin="$MOCK_ROOT/usr/bin/steamos-session-select"
+    if grep -q "plasma-workspace-wayland.target" "$sss_bin" && \
+       grep -q "unset-environment WAYLAND_DISPLAY" "$sss_bin" && \
+       grep -q 'loginctl terminate-session "\$XDG_SESSION_ID" 2>/dev/null || true' "$sss_bin"; then
+        say_pass "steamos-session-select aggiornato (stop portali/target, unset env e guardia su loginctl terminate-session)"
+    else
+        say_fail "steamos-session-select non aggiornato correttamente"
     fi
 
     # Verifica notificatore desktop ps5-desktop-notify
@@ -381,6 +402,7 @@ test_module_gamescope() {
 
     local gs_script="$MOCK_ROOT/usr/bin/gamescope-session-ps5"
     local conf_template="$MOCK_ROOT/etc/ps5-gamescope.conf"
+    local portals_conf="$MOCK_ROOT/usr/share/xdg-desktop-portal/gamescope-portals.conf"
 
     # Verifica template configurazione opzionale
     if [ -f "$conf_template" ] && grep -q "PS5_OUTPUT_WIDTH" "$conf_template"; then
@@ -389,17 +411,24 @@ test_module_gamescope() {
         say_fail "Template /etc/ps5-gamescope.conf mancante o non configurato"
     fi
 
+    # Verifica configurazione portali XDG per Gamescope
+    if [ -f "$portals_conf" ] && grep -q "default=gtk" "$portals_conf"; then
+        say_pass "Configurazione /usr/share/xdg-desktop-portal/gamescope-portals.conf creata correttamente"
+    else
+        say_fail "gamescope-portals.conf mancante o non configurato"
+    fi
+
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
         local missing_features=0
-        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles"; do
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope"; do
             if ! grep -q -- "$feat" "$gs_script"; then
                 say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
                 missing_features=$((missing_features + 1))
             fi
         done
         if [ $missing_features -eq 0 ]; then
-            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, guard bootstrap Steam e flag resilienti"
+            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, sync D-Bus DISPLAY/WAYLAND_DISPLAY, guard bootstrap Steam e flag resilienti"
         fi
     else
         say_fail "gamescope-session-ps5 non presente o non eseguibile"

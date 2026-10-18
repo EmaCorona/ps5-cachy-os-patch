@@ -87,11 +87,13 @@ esac
 EOF
     sudo chmod 0755 "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh"
 
-    # 4. Aggiorna steamos-session-select per terminare pulitamente i target Plasma (previene crash loop)
+    # 4. Aggiorna steamos-session-select per terminare pulitamente i target Plasma, i portali XDG
+    #    e proteggere loginctl terminate-session (evita "No session '1' known" quando kwin chiude già tty1)
     if [ -f "${cachy_mnt}/usr/bin/steamos-session-select" ]; then
-        if ! grep -q "plasma-workspace-wayland.target" "${cachy_mnt}/usr/bin/steamos-session-select"; then
-            sudo sed -i '/pkill -u steam plasmashell/i \        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null || true' "${cachy_mnt}/usr/bin/steamos-session-select"
-        fi
+        sudo sed -i '/systemctl --user stop plasma-workspace-wayland.target/d' "${cachy_mnt}/usr/bin/steamos-session-select"
+        sudo sed -i '/systemctl --user unset-environment WAYLAND_DISPLAY/d' "${cachy_mnt}/usr/bin/steamos-session-select"
+        sudo sed -i '/pkill -u steam plasmashell/i \        systemctl --user stop plasma-workspace-wayland.target plasma-core.target xdg-desktop-portal.service xdg-desktop-portal-kde.service xdg-desktop-portal-gtk.service 2>/dev/null || true\n        systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true' "${cachy_mnt}/usr/bin/steamos-session-select"
+        sudo sed -i 's/loginctl terminate-session "\$XDG_SESSION_ID"$/loginctl terminate-session "\$XDG_SESSION_ID" 2>\/dev\/null || true/g' "${cachy_mnt}/usr/bin/steamos-session-select"
     fi
 
     # 5. Notificatore Desktop per avvisi di sistema e primo avvio Steam

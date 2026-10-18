@@ -43,6 +43,14 @@ EOF
         sudo chmod 0644 "${cachy_mnt}/etc/ps5-gamescope.conf"
     fi
 
+    # 1b. Configura il profilo portali XDG per Gamescope (evita fallback su portali KDE/plasmanotify)
+    sudo mkdir -p "${cachy_mnt}/usr/share/xdg-desktop-portal"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/usr/share/xdg-desktop-portal/gamescope-portals.conf" >/dev/null
+[preferred]
+default=gtk
+EOF
+    sudo chmod 0644 "${cachy_mnt}/usr/share/xdg-desktop-portal/gamescope-portals.conf"
+
     # 2. Configura gamescope-session-ps5 con auto-rilevamento risoluzione e connettore
     sudo mkdir -p "${cachy_mnt}/usr/bin"
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/bin/gamescope-session-ps5" >/dev/null
@@ -51,6 +59,8 @@ EOF
 export LIBSEAT_BACKEND=logind
 export STEAM_ENABLE_DECK_UI=1
 export GAMESCOPE_FORCE_GRAB_CURSOR=1
+export XDG_CURRENT_DESKTOP=gamescope
+export XDG_SESSION_TYPE=wayland
 
 LOG_FILE="/home/steam/.gamescope.log"
 
@@ -156,7 +166,19 @@ fi
 # Attesa 1s per rilascio master DRM
 sleep 1
 
-exec "${GAMESCOPE_CMD[@]}" -- /usr/bin/steam "${STEAM_ARGS[@]}" >>"$LOG_FILE" 2>&1
+# Esporta DISPLAY e WAYLAND_DISPLAY creati da Gamescope nell'ambiente systemd --user / D-Bus
+# prima di lanciare Steam, così xdg-desktop-portal-gtk si avvia senza "cannot open display:"
+exec "${GAMESCOPE_CMD[@]}" -- /bin/sh -c '
+    export XDG_CURRENT_DESKTOP=gamescope
+    export XDG_SESSION_TYPE=wayland
+    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+        dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+    else
+        systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+    fi
+    systemctl --user reset-failed xdg-desktop-portal.service xdg-desktop-portal-gtk.service 2>/dev/null || true
+    exec /usr/bin/steam "$@"
+' -- "${STEAM_ARGS[@]}" >>"$LOG_FILE" 2>&1
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/bin/gamescope-session-ps5"
 
@@ -166,7 +188,7 @@ EOF
         log_success "Assegnato cap_sys_nice a gamescope."
     fi
 
-    log_success "Modulo Gamescope configurato con successo (auto-rilevamento DRM attivo)."
+    log_success "Modulo Gamescope configurato con successo (auto-rilevamento DRM e sync portali XDG attivo)."
     return 0
 }
 
@@ -174,10 +196,11 @@ module_gamescope_check() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    if [ -f "${cachy_mnt}/usr/bin/gamescope-session-ps5" ]; then
-        log_success "gamescope-session-ps5 configurato."
+    if [ -f "${cachy_mnt}/usr/bin/gamescope-session-ps5" ] && \
+       [ -f "${cachy_mnt}/usr/share/xdg-desktop-portal/gamescope-portals.conf" ]; then
+        log_success "gamescope-session-ps5 e gamescope-portals.conf configurati."
         return 0
     fi
-    log_warn "gamescope-session-ps5 non presente."
+    log_warn "gamescope-session-ps5 o gamescope-portals.conf non presenti."
     return 1
 }
