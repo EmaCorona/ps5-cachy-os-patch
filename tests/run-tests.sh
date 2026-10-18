@@ -310,7 +310,7 @@ EOS')
 }
 
 # ------------------------------------------------------------------------------
-# 4. Test Modulo Ventole (Daemon Silent-Gaming)
+# 4. Test Modulo Ventole (Curva Estesa a 8 Fasce, Isteresi 2°C e ps5-temp)
 # ------------------------------------------------------------------------------
 test_module_fan() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -319,18 +319,68 @@ test_module_fan() {
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     local daemon_bin="$MOCK_ROOT/usr/local/bin/ps5-fan-daemon"
+    local temp_bin="$MOCK_ROOT/usr/local/bin/ps5-temp"
+    local udev_rule="$MOCK_ROOT/etc/udev/rules.d/99-ps5-fan.rules"
+    local init_unit="$MOCK_ROOT/etc/systemd/system/ps5-fan.service"
     local service_unit="$MOCK_ROOT/etc/systemd/system/ps5-fan-daemon.service"
 
-    if [ -x "$daemon_bin" ]; then
-        say_pass "ps5-fan-daemon installato ed eseguibile"
+    if [ -x "$daemon_bin" ] && [ -x "$temp_bin" ]; then
+        say_pass "ps5-fan-daemon e utility ps5-temp installati ed eseguibili"
     else
-        say_fail "ps5-fan-daemon non installato o non eseguibile"
+        say_fail "ps5-fan-daemon o ps5-temp non installati o non eseguibili"
     fi
 
-    if [ -f "$service_unit" ] && grep -q "ExecStart=/usr/local/bin/ps5-fan-daemon" "$service_unit"; then
-        say_pass "Servizio systemd ps5-fan-daemon.service registrato"
+    if [ -f "$udev_rule" ] && grep -q 'ATTR{target_temp}="58"' "$udev_rule" && \
+       [ -f "$init_unit" ] && grep -q "echo 58" "$init_unit" && \
+       [ -f "$service_unit" ] && grep -q "ExecStart=/usr/local/bin/ps5-fan-daemon" "$service_unit"; then
+        say_pass "Baseline di boot silenzioso (58°C) in udev/ps5-fan.service e ps5-fan-daemon.service configurati"
     else
-        say_fail "ps5-fan-daemon.service mancante o non configurato correttamente"
+        say_fail "Configurazione udev/systemd del controllo ventola incompleta"
+    fi
+
+    # Verifica funzionale delle 8 fasce e dell'isteresi di 2°C
+    local fan_Check
+    fan_Check=$(PS5_FAN_LIB_ONLY=1 bash -c '
+        source "'"$daemon_bin"'"
+        # Verifica le 8 fasce in salita: 40->0(62), 45->1(58), 52->2(54), 60->3(50), 65->4(46), 71->5(42), 78->6(38), 83->7(30)
+        s0=$(compute_step_with_hysteresis 40 -1)
+        s1=$(compute_step_with_hysteresis 45 "$s0")
+        s2=$(compute_step_with_hysteresis 52 "$s1")
+        s3=$(compute_step_with_hysteresis 60 "$s2")
+        s4=$(compute_step_with_hysteresis 65 "$s3")
+        s5=$(compute_step_with_hysteresis 71 "$s4")
+        s6=$(compute_step_with_hysteresis 78 "$s5")
+        s7=$(compute_step_with_hysteresis 83 "$s6")
+        targets="${STEP_TARGET_TEMP[$s0]},${STEP_TARGET_TEMP[$s1]},${STEP_TARGET_TEMP[$s2]},${STEP_TARGET_TEMP[$s3]},${STEP_TARGET_TEMP[$s4]},${STEP_TARGET_TEMP[$s5]},${STEP_TARGET_TEMP[$s6]},${STEP_TARGET_TEMP[$s7]}"
+
+        # Verifica isteresi in discesa dalla fascia 2 (soglia 50°C, scende solo sotto 48°C):
+        # A 49°C e 48°C deve restare in fascia 2 (target 54), a 47°C scende in fascia 1 (target 58)
+        h_stay1=$(compute_step_with_hysteresis 49 2)
+        h_stay2=$(compute_step_with_hysteresis 48 2)
+        h_drop=$(compute_step_with_hysteresis 47 2)
+        echo "${targets}|${h_stay1},${h_stay2},${h_drop}"
+    ')
+    if [ "$fan_Check" = "62,58,54,50,46,42,38,30|2,2,1" ]; then
+        say_pass "Curva a 8 fasce (62..30°C) e isteresi di 2°C in raffreddamento verificate"
+    else
+        say_fail "Errore nel calcolo curva 8 fasce o isteresi: $fan_Check"
+    fi
+
+    # Verifica scrittura su target_temp e fallback pwm con --once
+    local mock_target="$SANDBOX_DIR/mock_target_temp"
+    local mock_hwmon="$SANDBOX_DIR/mock_hwmon"
+    mkdir -p "$mock_hwmon/hwmon0"
+    echo "50" > "$mock_target"
+    echo "46000" > "$mock_hwmon/hwmon0/temp1_input"
+    echo "0" > "$mock_hwmon/hwmon0/pwm1"
+    PS5_FAN_TARGET_FILE="$mock_target" PS5_HWMON_BASE="$mock_hwmon" "$daemon_bin" --once
+    local applied_target applied_pwm
+    applied_target=$(cat "$mock_target" 2>/dev/null || echo "")
+    applied_pwm=$(cat "$mock_hwmon/hwmon0/pwm1" 2>/dev/null || echo "")
+    if [ "$applied_target" = "58" ] && [ "$applied_pwm" = "75" ]; then
+        say_pass "Esecuzione --once scrive correttamente target_temp=58 e pwm=75 a 46°C (Fascia 2 Whisper Desktop)"
+    else
+        say_fail "Scrittura target_temp/pwm errata a 46°C (target=$applied_target, pwm=$applied_pwm)"
     fi
 }
 
