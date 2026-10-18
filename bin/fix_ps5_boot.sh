@@ -15,7 +15,8 @@ source "$REPO_DIR/lib/core/disk.sh"
 # Caricamento moduli necessari al ripristino boot
 source "$REPO_DIR/lib/modules/cleanup.sh"
 source "$REPO_DIR/lib/modules/vram.sh"
-source "$REPO_DIR/lib/modules/network.sh"
+source "$REPO_DIR/lib/modules/ethernet.sh"
+source "$REPO_DIR/lib/modules/wifi.sh"
 source "$REPO_DIR/lib/modules/fan.sh"
 source "$REPO_DIR/lib/modules/kde.sh"
 source "$REPO_DIR/lib/modules/gamescope.sh"
@@ -42,8 +43,9 @@ module_cleanup_run "$CACHY_MNT" "$BOOT_MNT"
 # 3. Protezione coredump, filesystem e auto-riparazione
 module_system_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 4. Modulo Rete e rimozione modulo difettoso mt7921e (causa panic a t=12s)
-module_network_run "$CACHY_MNT" "$BOOT_MNT"
+# 4. Moduli Rete (Ethernet cablata e Wi-Fi con staging firmware)
+module_ethernet_run "$CACHY_MNT" "$BOOT_MNT"
+module_wifi_run "$CACHY_MNT" "$BOOT_MNT"
 
 # 5. Modulo VRAM 4 GB (dedicata AMDGPU)
 module_vram_run "$CACHY_MNT" "$BOOT_MNT"

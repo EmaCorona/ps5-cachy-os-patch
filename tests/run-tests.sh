@@ -117,31 +117,13 @@ test_module_vram() {
 }
 
 # ------------------------------------------------------------------------------
-# 3. Test Modulo Rete e Wi-Fi (NXP IW620 + Rimozione mt7921e)
+# 3. Test Modulo Ethernet Cablata (MediaTek mts & override wait-online)
 # ------------------------------------------------------------------------------
-test_module_network() {
+test_module_ethernet() {
     source "$REPO_DIR/lib/core/common.sh"
-    source "$REPO_DIR/lib/modules/network.sh"
+    source "$REPO_DIR/lib/modules/ethernet.sh"
 
-    module_network_run "$MOCK_ROOT" "$MOCK_BOOT"
-
-    # Verifica rimozione mt7921e.ko
-    if [ ! -f "$MOCK_ROOT/usr/lib/modules/7.1.7/kernel/drivers/net/wireless/mediatek/mt76/mt7921/mt7921e.ko" ]; then
-        say_pass "Modulo difettoso mt7921e.ko rimosso con successo"
-    else
-        say_fail "mt7921e.ko ancora presente"
-    fi
-
-    # Verifica configurazione moduli Wi-Fi
-    if [ -f "$MOCK_ROOT/etc/modules-load.d/ps5-wifi.conf" ]; then
-        if grep -q "mlan" "$MOCK_ROOT/etc/modules-load.d/ps5-wifi.conf" && grep -q "moal" "$MOCK_ROOT/etc/modules-load.d/ps5-wifi.conf"; then
-            say_pass "ps5-wifi.conf carica correttamente mlan e moal"
-        else
-            say_fail "ps5-wifi.conf non contiene i driver NXP previsti"
-        fi
-    else
-        say_fail "ps5-wifi.conf mancante"
-    fi
+    module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Verifica override networkd-wait-online contro deadlock
     local override_file="$MOCK_ROOT/etc/systemd/system/systemd-networkd-wait-online.service.d/override.conf"
@@ -149,6 +131,72 @@ test_module_network() {
         say_pass "Override anti-deadlock systemd-networkd configurato"
     else
         say_fail "Override systemd-networkd mancante o errato"
+    fi
+
+    # Verifica NetworkManager abilitato
+    if [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/NetworkManager.service" ]; then
+        say_pass "NetworkManager.service abilitato in multi-user.target.wants"
+    else
+        say_fail "NetworkManager.service non abilitato per Ethernet"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 4. Test Modulo Wi-Fi (NXP IW620 moal/mlan, staging firmware e NetworkManager mlan0)
+# ------------------------------------------------------------------------------
+test_module_wifi() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/wifi.sh"
+
+    # Crea file firmware fittizio nel boot mock
+    mkdir -p "$MOCK_BOOT/nxp"
+    echo "MOCK_FIRMWARE_IW620" > "$MOCK_BOOT/nxp/pcieuartiw620_combo_v1.bin"
+
+    module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    # Verifica posizionamento firmware
+    if [ -f "$MOCK_ROOT/lib/firmware/nxp/pcieuartiw620_combo_v1.bin" ]; then
+        say_pass "Firmware NXP IW620 copiato in /lib/firmware/nxp/"
+    else
+        say_fail "Firmware NXP IW620 non copiato in /lib/firmware/nxp/"
+    fi
+
+    # Verifica opzioni obbligatorie moal
+    local modprobe_conf="$MOCK_ROOT/etc/modprobe.d/ps5-iw620.conf"
+    if [ -f "$modprobe_conf" ] && grep -q "fw_name=" "$modprobe_conf" && grep -q "sta_name=mlan" "$modprobe_conf"; then
+        say_pass "Opzioni modulo moal / ps5-iw620.conf configurate correttamente"
+    else
+        say_fail "ps5-iw620.conf mancante o privo di parametri obbligatori"
+    fi
+
+    # Verifica blacklist mt7921e (preservando mt7921u per USB)
+    local bl_conf="$MOCK_ROOT/etc/modprobe.d/ps5-blacklist-mt7921e.conf"
+    if [ -f "$bl_conf" ] && grep -q "blacklist mt7921e" "$bl_conf"; then
+        say_pass "Blacklist modulo PCIe instabile mt7921e attiva"
+    else
+        say_fail "Blacklist mt7921e mancante"
+    fi
+
+    # Verifica gestione NetworkManager per mlan0
+    local nm_managed="$MOCK_ROOT/etc/NetworkManager/conf.d/10-globally-managed-devices.conf"
+    if [ -f "$nm_managed" ] && grep -q "unmanaged-devices=none" "$nm_managed"; then
+        say_pass "NetworkManager configurato per gestire interfaccia mlan0 (unmanaged-devices=none)"
+    else
+        say_fail "Drop-in NetworkManager per unmanaged-devices mancante"
+    fi
+
+    # Verifica WirelessEnabled=true
+    if [ -f "$MOCK_ROOT/var/lib/NetworkManager/NetworkManager.state" ] && grep -q "WirelessEnabled=true" "$MOCK_ROOT/var/lib/NetworkManager/NetworkManager.state"; then
+        say_pass "NetworkManager.state configurato con WirelessEnabled=true"
+    else
+        say_fail "WirelessEnabled non abilitato in NetworkManager.state"
+    fi
+
+    # Verifica ps5-stage-firmware
+    if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-stage-firmware" ]; then
+        say_pass "Script ps5-stage-firmware aggiornato ed eseguibile"
+    else
+        say_fail "Script ps5-stage-firmware mancante o non eseguibile"
     fi
 }
 
@@ -352,31 +400,34 @@ test_module_cleanup() {
 test_idempotency() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/vram.sh"
-    source "$REPO_DIR/lib/modules/network.sh"
+    source "$REPO_DIR/lib/modules/ethernet.sh"
+    source "$REPO_DIR/lib/modules/wifi.sh"
     source "$REPO_DIR/lib/modules/fan.sh"
     source "$REPO_DIR/lib/modules/kde.sh"
     source "$REPO_DIR/lib/modules/gamescope.sh"
 
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
-    module_network_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Seconda esecuzione
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
-    module_network_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
 
-    # Verifica che il file wifi non abbia duplicati
-    local mlan_count
-    mlan_count=$(grep -c "mlan" "$MOCK_ROOT/etc/modules-load.d/ps5-wifi.conf" || true)
-    if [ "$mlan_count" -eq 1 ]; then
+    # Verifica che il file di configurazione moal non abbia duplicati
+    local opt_count
+    opt_count=$(grep -c "options moal" "$MOCK_ROOT/etc/modprobe.d/ps5-iw620.conf" || true)
+    if [ "$opt_count" -eq 1 ]; then
         say_pass "Idempotenza confermata: voci nei file di configurazione non duplicate"
     else
-        say_fail "Rilevati duplicati in ps5-wifi.conf (count: $mlan_count)"
+        say_fail "Rilevati duplicati in ps5-iw620.conf (count: $opt_count)"
     fi
 }
 
@@ -399,7 +450,7 @@ test_cli_orchestration() {
 
     local list_out
     list_out=$("$main_cli" --list-modules 2>&1 || true)
-    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope"; then
+    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "ethernet" && echo "$list_out" | grep -q "wifi" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope"; then
         say_pass "Flag --list-modules elenca i moduli principali"
     else
         say_fail "Flag --list-modules incompleto o non funzionante"
@@ -444,7 +495,7 @@ test_master_patch_full() {
     # Test esecuzione completa di tutti i moduli
     "$main_cli" --all --skip-fsck >/dev/null 2>&1 || true
     if [ -f "$MOCK_BOOT/vram.txt" ] && \
-       [ -f "$MOCK_ROOT/etc/modules-load.d/ps5-wifi.conf" ] && \
+       [ -f "$MOCK_ROOT/etc/modprobe.d/ps5-iw620.conf" ] && \
        [ -x "$MOCK_ROOT/usr/local/bin/ps5-fan-daemon" ] && \
        [ -x "$MOCK_ROOT/usr/bin/gamescope-session-ps5" ] && \
        [ -f "$MOCK_ROOT/etc/sudoers.d/wheel" ]; then
@@ -464,7 +515,8 @@ echo "==========================================================================
 run_test test_syntax
 run_test test_module_cleanup
 run_test test_module_vram
-run_test test_module_network
+run_test test_module_ethernet
+run_test test_module_wifi
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope
