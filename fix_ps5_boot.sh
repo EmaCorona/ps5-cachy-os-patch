@@ -51,11 +51,25 @@ if [ -z "$BOOT_MNT" ]; then
     done
 fi
 
+# Verifica dispositivo a blocchi e controllo integrità filesystem
+ROOT_DEV=""
+for m in $(lsblk -rno NAME,MOUNTPOINTS 2>/dev/null | grep -E "cachyos|/run/media/.*cachyos" | awk '{print $1}'); do
+    [ -b "/dev/$m" ] && ROOT_DEV="/dev/$m" && break
+done
+[ -z "$ROOT_DEV" ] && [ -b "/dev/sda1" ] && ROOT_DEV="/dev/sda1"
+
+if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
+    log_step "Controllo e riparazione filesystem ext4 (${ROOT_DEV})..."
+    umount "$ROOT_DEV" 2>/dev/null || true
+    e2fsck -fy "$ROOT_DEV" 2>/dev/null || true
+    log_success "Filesystem ext4 controllato e riparato."
+fi
+
 # Verifica e rimonta in scrittura
 log_step "Verifica partizioni e permessi di scrittura..."
 if [ -z "$CACHY_MNT" ] || [ ! -d "$CACHY_MNT" ]; then
     mkdir -p "/run/media/emacorona/cachyos"
-    mount /dev/sda1 "/run/media/emacorona/cachyos" 2>/dev/null || log_error "Partizione rootfs non trovata."
+    mount -o rw "${ROOT_DEV:-/dev/sda1}" "/run/media/emacorona/cachyos" 2>/dev/null || log_error "Partizione rootfs non trovata."
     CACHY_MNT="/run/media/emacorona/cachyos"
 fi
 mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true

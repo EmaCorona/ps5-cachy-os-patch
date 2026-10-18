@@ -105,6 +105,16 @@ fi
 log_success "Partizione CachyOS (ext4): ${CACHY_MNT}"
 log_success "Partizione Boot (FAT32):    ${BOOT_MNT}"
 
+# Controllo preventivo dell'integrità del filesystem ext4 (ripara disconnessioni USB improvvise)
+ROOT_DEV=$(findmnt -n -o SOURCE "$CACHY_MNT" 2>/dev/null || true)
+if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
+    log_step "Controllo preventivo e riparazione filesystem ext4 (${ROOT_DEV})..."
+    sudo umount "$ROOT_DEV" 2>/dev/null || true
+    sudo e2fsck -fy "$ROOT_DEV" 2>/dev/null || true
+    sudo mount -o rw "$ROOT_DEV" "$CACHY_MNT" 2>/dev/null || sudo mount "$ROOT_DEV" "$CACHY_MNT"
+    log_success "Filesystem ext4 controllato e riparato con successo."
+fi
+
 sudo mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
