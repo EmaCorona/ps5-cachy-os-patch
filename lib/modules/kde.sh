@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/modules/session.sh - Configurazione KDE Plasma 6 Wayland e Gamescope DRM 1080p
+# lib/modules/kde.sh - Configurazione Desktop KDE Plasma 6 Wayland su PS5
 # ==============================================================================
 
-module_session_info() {
-    echo "Configurazione sessione desktop KDE Plasma 6 e Gamescope Gaming Mode (1080p60 DRM)"
+module_kde_info() {
+    echo "Configurazione sessione desktop KDE Plasma 6 Wayland, autologin tty1 e gruppi utente"
 }
 
-module_session_run() {
+module_kde_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    log_step "Modulo Sessione: Configurazione KDE Plasma 6 e Gamescope DRM 1080p..."
+    log_step "Modulo KDE: Configurazione Desktop KDE Plasma 6 Wayland..."
 
     if [ -z "$cachy_mnt" ] || [ ! -d "$cachy_mnt" ]; then
         log_error "Root filesystem CachyOS non trovato."
@@ -87,58 +87,25 @@ esac
 EOF
     sudo chmod 0755 "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh"
 
-    # 4. Configura gamescope-session-ps5 con parametri DRM 1080p60 e log
-    sudo mkdir -p "${cachy_mnt}/usr/bin"
-    cat << 'EOF' | sudo tee "${cachy_mnt}/usr/bin/gamescope-session-ps5" >/dev/null
-#!/bin/bash
-# gamescope-session-ps5: launch Gamescope in DRM mode for PS5 external display
-export LIBSEAT_BACKEND=logind
-export STEAM_ENABLE_DECK_UI=1
-export GAMESCOPE_FORCE_GRAB_CURSOR=1
-
-# Attesa per rilascio master DRM da parte della sessione precedente
-sleep 1
-
-LOG_FILE="/home/steam/.gamescope.log"
-
-exec /usr/bin/gamescope \
-    -W 1920 -H 1080 \
-    -w 1920 -h 1080 \
-    -r 60 \
-    --backend drm \
-    --prefer-output DP-1 \
-    --sdr-gamut-wideness 0 \
-    --force-grab-cursor \
-    -e \
-    -- /usr/bin/steam -gamepadui >"$LOG_FILE" 2>&1
-EOF
-    sudo chmod 0755 "${cachy_mnt}/usr/bin/gamescope-session-ps5"
-
-    # 5. Assegna CAP_SYS_NICE a gamescope per permettere lo scheduling realtime ed evitare race condition
-    if [ -f "${cachy_mnt}/usr/bin/gamescope" ]; then
-        sudo setcap 'cap_sys_nice=eip' "${cachy_mnt}/usr/bin/gamescope" 2>/dev/null || true
-        log_success "Assegnato cap_sys_nice a gamescope."
-    fi
-
-    # 6. Aggiorna steamos-session-select per terminare pulitamente i target Plasma (previene crash loop)
+    # 4. Aggiorna steamos-session-select per terminare pulitamente i target Plasma (previene crash loop)
     if [ -f "${cachy_mnt}/usr/bin/steamos-session-select" ]; then
         if ! grep -q "plasma-workspace-wayland.target" "${cachy_mnt}/usr/bin/steamos-session-select"; then
             sudo sed -i '/pkill -u steam plasmashell/i \        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null || true' "${cachy_mnt}/usr/bin/steamos-session-select"
         fi
     fi
 
-    log_success "Modulo Sessione completato (Desktop KDE Plasma 6 + Gamescope 1080p60)."
+    log_success "Modulo KDE Plasma 6 configurato con successo."
     return 0
 }
 
-module_session_check() {
+module_kde_check() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    if [ -f "${cachy_mnt}/usr/bin/gamescope-session-ps5" ]; then
-        log_success "gamescope-session-ps5 configurato."
+    if [ -f "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" ]; then
+        log_success "Script ps5-tty-session.sh presente."
         return 0
     fi
-    log_warn "gamescope-session-ps5 non presente."
+    log_warn "ps5-tty-session.sh non presente."
     return 1
 }

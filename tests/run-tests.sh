@@ -178,17 +178,42 @@ test_module_fan() {
 }
 
 # ------------------------------------------------------------------------------
-# 5. Test Modulo Sessione & Gamescope (DRM Mode + 1080p60 + cap_sys_nice)
+# 5. Test Modulo Desktop KDE Plasma 6 Wayland
 # ------------------------------------------------------------------------------
-test_module_session() {
+test_module_kde() {
     source "$REPO_DIR/lib/core/common.sh"
-    source "$REPO_DIR/lib/modules/session.sh"
+    source "$REPO_DIR/lib/modules/kde.sh"
 
-    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
 
-    local gs_script="$MOCK_ROOT/usr/bin/gamescope-session-ps5"
     local tty_profile="$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
     local next_sess="$MOCK_ROOT/home/steam/.config/ps5-next-session"
+
+    # Verifica ps5-tty-session.sh
+    if [ -x "$tty_profile" ] && grep -q "startplasma-wayland" "$tty_profile"; then
+        say_pass "ps5-tty-session.sh configurato per avvio KDE Plasma Wayland"
+    else
+        say_fail "ps5-tty-session.sh mancante o non configurato"
+    fi
+
+    # Verifica default session
+    if [ -f "$next_sess" ] && grep -q "desktop" "$next_sess"; then
+        say_pass "Sessione predefinita impostata su desktop (KDE Plasma)"
+    else
+        say_fail "ps5-next-session mancante o non impostato su desktop"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 6. Test Modulo Gamescope Gaming Mode (1080p60 DRM + cap_sys_nice)
+# ------------------------------------------------------------------------------
+test_module_gamescope() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/gamescope.sh"
+
+    module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    local gs_script="$MOCK_ROOT/usr/bin/gamescope-session-ps5"
 
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
@@ -217,13 +242,6 @@ test_module_session() {
         say_pass "setcap cap_sys_nice=eip invocato su gamescope"
     else
         say_fail "setcap cap_sys_nice non registrato negli stub"
-    fi
-
-    # Verifica default session
-    if [ -f "$next_sess" ] && grep -q "desktop" "$next_sess"; then
-        say_pass "Sessione predefinita impostata su desktop (KDE Plasma)"
-    else
-        say_fail "ps5-next-session mancante o non impostato su desktop"
     fi
 }
 
@@ -316,18 +334,21 @@ test_idempotency() {
     source "$REPO_DIR/lib/modules/vram.sh"
     source "$REPO_DIR/lib/modules/network.sh"
     source "$REPO_DIR/lib/modules/fan.sh"
-    source "$REPO_DIR/lib/modules/session.sh"
+    source "$REPO_DIR/lib/modules/kde.sh"
+    source "$REPO_DIR/lib/modules/gamescope.sh"
 
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_network_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
-    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Seconda esecuzione
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_network_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
-    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Verifica che il file wifi non abbia duplicati
     local mlan_count
@@ -358,7 +379,7 @@ test_cli_orchestration() {
 
     local list_out
     list_out=$("$main_cli" --list-modules 2>&1 || true)
-    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "session"; then
+    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope"; then
         say_pass "Flag --list-modules elenca i moduli principali"
     else
         say_fail "Flag --list-modules incompleto o non funzionante"
@@ -425,7 +446,8 @@ run_test test_module_cleanup
 run_test test_module_vram
 run_test test_module_network
 run_test test_module_fan
-run_test test_module_session
+run_test test_module_kde
+run_test test_module_gamescope
 run_test test_module_system
 run_test test_idempotency
 run_test test_cli_orchestration

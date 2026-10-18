@@ -17,7 +17,8 @@ source "$REPO_DIR/lib/modules/cleanup.sh"
 source "$REPO_DIR/lib/modules/vram.sh"
 source "$REPO_DIR/lib/modules/network.sh"
 source "$REPO_DIR/lib/modules/fan.sh"
-source "$REPO_DIR/lib/modules/session.sh"
+source "$REPO_DIR/lib/modules/kde.sh"
+source "$REPO_DIR/lib/modules/gamescope.sh"
 source "$REPO_DIR/lib/modules/system.sh"
 
 check_root
@@ -50,8 +51,11 @@ module_vram_run "$CACHY_MNT" "$BOOT_MNT"
 # 6. Modulo Ventole (Daemon Silent-Gaming)
 module_fan_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 7. Modulo Sessione (KDE Plasma 6 + Gamescope DRM 1080p60 + cap_sys_nice)
-module_session_run "$CACHY_MNT" "$BOOT_MNT"
+# 7. Modulo Desktop KDE Plasma 6 Wayland
+module_kde_run "$CACHY_MNT" "$BOOT_MNT"
+
+# 8. Modulo Gamescope Gaming Mode (1080p60 DRM + cap_sys_nice)
+module_gamescope_run "$CACHY_MNT" "$BOOT_MNT"
 
 # 6. Sincronizzazione filesystem
 log_step "Sincronizzazione finale dati su disco..."
