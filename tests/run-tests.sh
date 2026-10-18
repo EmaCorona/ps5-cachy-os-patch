@@ -34,9 +34,12 @@ setup_sandbox() {
     export MOCK_BOOT="${SANDBOX_DIR}/boot"
     export MOCK_BACKUP="${SANDBOX_DIR}/backup"
     export STUB_LOG="${SANDBOX_DIR}/stub.log"
+    export PS5_REGDB_SRC_DIR="${SANDBOX_DIR}/regdb_src"
 
     mkdir -p "$MOCK_ROOT"/{etc/{modules-load.d,modprobe.d,sudoers.d,systemd/{system,journald.conf.d}},usr/{bin,lib/{modules/7.1.7/kernel/drivers/net/wireless/mediatek/mt76/mt7921,firmware/{nxp,mrvl}}},usr/local/{bin,sbin},home/steam/.config}
-    mkdir -p "$MOCK_BOOT"
+    mkdir -p "$MOCK_BOOT" "$PS5_REGDB_SRC_DIR"
+    echo "MOCK_REGDB_DATA" > "$PS5_REGDB_SRC_DIR/regulatory.db"
+    echo "MOCK_REGDB_SIG" > "$PS5_REGDB_SRC_DIR/regulatory.db.p7s"
     
     # Crea file di partenza per test di rimozione/modifica
     touch "$MOCK_ROOT/usr/lib/modules/7.1.7/kernel/drivers/net/wireless/mediatek/mt76/mt7921/mt7921e.ko"
@@ -117,11 +120,18 @@ test_module_vram() {
 }
 
 # ------------------------------------------------------------------------------
-# 3. Test Modulo Ethernet Cablata (MediaTek mts & override wait-online)
+# 3. Test Modulo Ethernet Cablata (MediaTek mts, offload netlink NM e ps5-net-diag)
 # ------------------------------------------------------------------------------
 test_module_ethernet() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/ethernet.sh"
+
+    # Pre-popola file obsoleti per verificare che vengano rimossi
+    mkdir -p "$MOCK_ROOT/etc/udev/rules.d" "$MOCK_ROOT/etc/sysctl.d" "$MOCK_ROOT/etc/NetworkManager/dispatcher.d"
+    touch "$MOCK_ROOT/etc/udev/rules.d/99-ps5-ethernet-offload.rules" \
+          "$MOCK_ROOT/etc/sysctl.d/99-ps5-ethernet.conf" \
+          "$MOCK_ROOT/usr/local/bin/ps5-eth-fix" \
+          "$MOCK_ROOT/etc/NetworkManager/dispatcher.d/99-ps5-ethernet-carrier.sh"
 
     module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
 
@@ -133,6 +143,40 @@ test_module_ethernet() {
         say_fail "Override systemd-networkd mancante o errato"
     fi
 
+    # Verifica profilo NetworkManager con IPv6 disabled per-connessione e sezione [ethtool] netlink
+    local nm_conn="$MOCK_ROOT/etc/NetworkManager/system-connections/ps5-ethernet.nmconnection"
+    if [ -f "$nm_conn" ] && \
+       grep -q "method=disabled" "$nm_conn" && \
+       grep -q "interface-name=enp64s0f2" "$nm_conn" && \
+       grep -q "^\[ethtool\]" "$nm_conn" && \
+       grep -q "feature-tso=false" "$nm_conn" && \
+       grep -q "feature-gso=false" "$nm_conn" && \
+       grep -q "feature-rx=false" "$nm_conn"; then
+        say_pass "Profilo NetworkManager ps5-ethernet.nmconnection configurato con [ethtool] e ipv6.method=disabled"
+    else
+        say_fail "Profilo ps5-ethernet.nmconnection mancante o privo di sezione [ethtool]/ipv6"
+    fi
+
+    # Verifica rimozione file obsoleti dipendenti da ethtool binario / sysctl globale
+    if [ ! -e "$MOCK_ROOT/etc/udev/rules.d/99-ps5-ethernet-offload.rules" ] && \
+       [ ! -e "$MOCK_ROOT/etc/sysctl.d/99-ps5-ethernet.conf" ] && \
+       [ ! -e "$MOCK_ROOT/usr/local/bin/ps5-eth-fix" ] && \
+       [ ! -e "$MOCK_ROOT/etc/NetworkManager/dispatcher.d/99-ps5-ethernet-carrier.sh" ]; then
+        say_pass "File obsoleti (udev ethtool, sysctl globale, dispatcher) rimossi correttamente"
+    else
+        say_fail "File obsoleti non rimossi da module_ethernet_run"
+    fi
+
+    # Verifica collector diagnostico post-boot ps5-net-diag
+    if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-net-diag" ] && \
+       [ -f "$MOCK_ROOT/etc/systemd/system/ps5-net-diag.service" ] && \
+       [ -f "$MOCK_ROOT/etc/systemd/system/ps5-net-diag.timer" ] && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/timers.target.wants/ps5-net-diag.timer" ]; then
+        say_pass "Collector diagnostico post-boot ps5-net-diag.service + .timer configurato"
+    else
+        say_fail "Collector diagnostico ps5-net-diag mancante o non abilitato"
+    fi
+
     # Verifica NetworkManager abilitato
     if [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/NetworkManager.service" ]; then
         say_pass "NetworkManager.service abilitato in multi-user.target.wants"
@@ -142,23 +186,41 @@ test_module_ethernet() {
 }
 
 # ------------------------------------------------------------------------------
-# 4. Test Modulo Wi-Fi (NXP IW620 moal/mlan, staging firmware e NetworkManager mlan0)
+# 4. Test Modulo Wi-Fi (rilevamento sysfs, regulatory.db ermetico e dongle USB)
 # ------------------------------------------------------------------------------
 test_module_wifi() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/wifi.sh"
 
-    # Crea file firmware fittizio nel boot mock
+    # Crea file firmware fittizio nel boot mock e file obsoleti in modules-load.d
     mkdir -p "$MOCK_BOOT/nxp"
     echo "MOCK_FIRMWARE_IW620" > "$MOCK_BOOT/nxp/pcieuartiw620_combo_v1.bin"
+    touch "$MOCK_ROOT/etc/modules-load.d/ps5-usb-wifi.conf" "$MOCK_ROOT/etc/modules-load.d/moal"
 
     module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
 
-    # Verifica posizionamento firmware
-    if [ -f "$MOCK_ROOT/lib/firmware/nxp/pcieuartiw620_combo_v1.bin" ]; then
-        say_pass "Firmware NXP IW620 copiato in /lib/firmware/nxp/"
+    # Verifica regulatory.db ermetico da PS5_REGDB_SRC_DIR
+    if [ -f "$MOCK_ROOT/usr/lib/firmware/regulatory.db" ] && \
+       grep -q "MOCK_REGDB_DATA" "$MOCK_ROOT/usr/lib/firmware/regulatory.db" && \
+       [ -f "$MOCK_ROOT/usr/lib/firmware/regulatory.db.p7s" ]; then
+        say_pass "Database regolatorio wireless regulatory.db (+ .p7s) installato ermeticamente"
     else
-        say_fail "Firmware NXP IW620 non copiato in /lib/firmware/nxp/"
+        say_fail "regulatory.db non installato correttamente da PS5_REGDB_SRC_DIR"
+    fi
+
+    # Verifica rimozione ps5-usb-wifi.conf e moal statici
+    if [ ! -e "$MOCK_ROOT/etc/modules-load.d/ps5-usb-wifi.conf" ] && \
+       [ ! -e "$MOCK_ROOT/etc/modules-load.d/moal" ]; then
+        say_pass "File statici superflui in modules-load.d rimossi correttamente"
+    else
+        say_fail "File statici in modules-load.d non rimossi"
+    fi
+
+    # Verifica posizionamento firmware NXP
+    if [ -f "$MOCK_ROOT/usr/lib/firmware/nxp/pcieuartiw620_combo_v1.bin" ]; then
+        say_pass "Firmware NXP IW620 copiato in /usr/lib/firmware/nxp/"
+    else
+        say_fail "Firmware NXP IW620 non copiato in /usr/lib/firmware/nxp/"
     fi
 
     # Verifica opzioni obbligatorie moal
@@ -177,10 +239,10 @@ test_module_wifi() {
         say_fail "Blacklist mt7921e mancante"
     fi
 
-    # Verifica gestione NetworkManager per mlan0
+    # Verifica gestione NetworkManager
     local nm_managed="$MOCK_ROOT/etc/NetworkManager/conf.d/10-globally-managed-devices.conf"
     if [ -f "$nm_managed" ] && grep -q "unmanaged-devices=none" "$nm_managed"; then
-        say_pass "NetworkManager configurato per gestire interfaccia mlan0 (unmanaged-devices=none)"
+        say_pass "NetworkManager configurato per gestire tutti i dispositivi wireless (unmanaged-devices=none)"
     else
         say_fail "Drop-in NetworkManager per unmanaged-devices mancante"
     fi
@@ -192,18 +254,40 @@ test_module_wifi() {
         say_fail "WirelessEnabled non abilitato in NetworkManager.state"
     fi
 
-    # Verifica ps5-stage-firmware
-    if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-stage-firmware" ]; then
-        say_pass "Script ps5-stage-firmware aggiornato ed eseguibile"
+    # Test di regressione rilevamento PCIe via sysfs (Bug #2: lspci -d restituiva sempre 0)
+    local stage_bin="$MOCK_ROOT/usr/local/sbin/ps5-stage-firmware"
+    if [ -x "$stage_bin" ] && ! grep -q "lspci" "$stage_bin"; then
+        local mock_sys_mtk="$SANDBOX_DIR/sys_mtk/0000:40:00.7"
+        local mock_sys_nxp="$SANDBOX_DIR/sys_nxp/0000:40:00.7"
+        mkdir -p "$mock_sys_mtk" "$mock_sys_nxp"
+        echo "0x14c3" > "$mock_sys_mtk/vendor"
+        echo "0x7961" > "$mock_sys_mtk/device"
+        echo "0x1b4b" > "$mock_sys_nxp/vendor"
+        echo "0x2b42" > "$mock_sys_nxp/device"
+
+        local mtk_res nxp_res
+        mtk_res=$(PS5_SYSFS_PCI="$SANDBOX_DIR/sys_mtk" sh -c '. /dev/stdin << "EOS"
+'"$(sed -n '/^SYSFS_PCI=/,/^fi$/p' "$stage_bin")"'
+echo "$is_mtk"
+EOS')
+        nxp_res=$(PS5_SYSFS_PCI="$SANDBOX_DIR/sys_nxp" sh -c '. /dev/stdin << "EOS"
+'"$(sed -n '/^SYSFS_PCI=/,/^fi$/p' "$stage_bin")"'
+echo "$is_mtk"
+EOS')
+        if [ "$mtk_res" = "1" ] && [ "$nxp_res" = "0" ]; then
+            say_pass "Rilevamento PCIe sysfs distingue correttamente MT7921 (1) da NXP/altro (0)"
+        else
+            say_fail "Rilevamento PCIe sysfs errato (mtk=$mtk_res, nxp=$nxp_res)"
+        fi
     else
-        say_fail "Script ps5-stage-firmware mancante o non eseguibile"
+        say_fail "Script ps5-stage-firmware mancante o usa ancora lspci"
     fi
 
     # Verifica utility diagnostica ps5-network-status
-    if [ -x "$MOCK_ROOT/usr/local/bin/ps5-network-status" ]; then
-        say_pass "Utility diagnostica ps5-network-status installata ed eseguibile"
+    if [ -x "$MOCK_ROOT/usr/local/bin/ps5-network-status" ] && ! grep -q "lspci" "$MOCK_ROOT/usr/local/bin/ps5-network-status"; then
+        say_pass "Utility diagnostica ps5-network-status installata e basata su sysfs"
     else
-        say_fail "Utility ps5-network-status mancante o non eseguibile"
+        say_fail "Utility ps5-network-status mancante o dipendente da lspci"
     fi
 }
 
