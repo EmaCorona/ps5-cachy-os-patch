@@ -198,6 +198,13 @@ test_module_wifi() {
     else
         say_fail "Script ps5-stage-firmware mancante o non eseguibile"
     fi
+
+    # Verifica utility diagnostica ps5-network-status
+    if [ -x "$MOCK_ROOT/usr/local/bin/ps5-network-status" ]; then
+        say_pass "Utility diagnostica ps5-network-status installata ed eseguibile"
+    else
+        say_fail "Utility ps5-network-status mancante o non eseguibile"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -250,11 +257,19 @@ test_module_kde() {
     else
         say_fail "ps5-next-session mancante o non impostato su desktop"
     fi
+
+    # Verifica notificatore desktop ps5-desktop-notify
+    local notify_bin="$MOCK_ROOT/usr/local/bin/ps5-desktop-notify"
+    local notify_desktop="$MOCK_ROOT/etc/xdg/autostart/ps5-desktop-notify.desktop"
+    if [ -x "$notify_bin" ] && [ -f "$notify_desktop" ]; then
+        say_pass "Notificatore desktop KDE e autostart configurati"
+    else
+        say_fail "Notificatore ps5-desktop-notify o autostart desktop mancante"
+    fi
 }
 
 # ------------------------------------------------------------------------------
-# ------------------------------------------------------------------------------
-# 6. Test Modulo Gamescope Gaming Mode (Auto-rilevamento DRM + cap_sys_nice)
+# 6. Test Modulo Gamescope Gaming Mode (Auto-rilevamento DRM, Steam Guard & cap_sys_nice)
 # ------------------------------------------------------------------------------
 test_module_gamescope() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -275,14 +290,14 @@ test_module_gamescope() {
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
         local missing_features=0
-        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf"; do
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles"; do
             if ! grep -q -- "$feat" "$gs_script"; then
                 say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
                 missing_features=$((missing_features + 1))
             fi
         done
         if [ $missing_features -eq 0 ]; then
-            say_pass "gamescope-session-ps5 contiene l'auto-rilevamento DRM, parametri e gestione log"
+            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, guard bootstrap Steam e flag resilienti"
         fi
     else
         say_fail "gamescope-session-ps5 non presente o non eseguibile"

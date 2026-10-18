@@ -98,7 +98,43 @@ FINAL_CONN="${PS5_OUTPUT_CONN:-${DETECTED_CONN:-DP-1,HDMI-A-1}}"
 
 echo "[$(date -Is)] PS5 Gamescope Init: Connettore=${FINAL_CONN} (rilevato: ${DETECTED_CONN:-none}), Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}, Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}, Refresh=${PS5_REFRESH_RATE:-Auto}" >> "$LOG_FILE"
 
-# 3. Composizione argomenti Gamescope
+# 3. Controllo stato di Bootstrap e Rete per Steam
+STEAM_INSTALLED_FLAG="/home/steam/.local/share/Steam/package/steam_client_ubuntu12.installed"
+SESSION_FILE="/home/steam/.config/ps5-next-session"
+
+check_network() {
+    if ip route get 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+if [ ! -f "$STEAM_INSTALLED_FLAG" ]; then
+    echo "[$(date -Is)] PS5 Gamescope: Steam runtime package non ancora inizializzato (primo bootstrap richiesto)." >> "$LOG_FILE"
+    if ! check_network; then
+        echo "[$(date -Is)] PS5 Gamescope ERRORE: Connessione di rete assente al primo avvio di Steam." >> "$LOG_FILE"
+        echo "[$(date -Is)] Ritorno a KDE Plasma Desktop per consentire la configurazione della rete (Ethernet o dongle Wi-Fi USB)." >> "$LOG_FILE"
+        mkdir -p "$(dirname "$SESSION_FILE")"
+        echo "desktop" > "$SESSION_FILE" 2>/dev/null || true
+        mkdir -p /home/steam/.config
+        cat << 'NOTIFY_EOF' > /home/steam/.config/ps5-steam-firstboot-alert.txt
+ATTENZIONE: Al primo avvio, Steam necessita di una connessione internet attiva (cavo Ethernet o dongle Wi-Fi USB) per scaricare i componenti di gioco (~400 MB).
+Configura la rete da questo Desktop KDE e avvia Steam una volta per completare l'installazione.
+Successivamente potrai avviare la modalità Gaming Gamescope anche offline.
+NOTIFY_EOF
+        chown -R steam:steam /home/steam/.config 2>/dev/null || true
+        exit 0
+    fi
+    echo "[$(date -Is)] Connessione presente: procedo con il primo bootstrap di Steam sotto Gamescope." >> "$LOG_FILE"
+fi
+
+# 4. Parametri Steam resilienti (Steam Deck UI + noverifyfiles se già bootstrappato)
+STEAM_ARGS=(-gamepadui -steamos)
+if [ -f "$STEAM_INSTALLED_FLAG" ]; then
+    STEAM_ARGS+=(-noverifyfiles)
+fi
+
+# 5. Composizione argomenti Gamescope
 GAMESCOPE_CMD=(
     /usr/bin/gamescope
     -W "$FINAL_OUTPUT_W"
@@ -120,7 +156,7 @@ fi
 # Attesa 1s per rilascio master DRM
 sleep 1
 
-exec "${GAMESCOPE_CMD[@]}" -- /usr/bin/steam -gamepadui >>"$LOG_FILE" 2>&1
+exec "${GAMESCOPE_CMD[@]}" -- /usr/bin/steam "${STEAM_ARGS[@]}" >>"$LOG_FILE" 2>&1
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/bin/gamescope-session-ps5"
 

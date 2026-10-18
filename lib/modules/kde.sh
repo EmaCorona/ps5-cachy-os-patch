@@ -94,6 +94,35 @@ EOF
         fi
     fi
 
+    # 5. Notificatore Desktop per avvisi di sistema e primo avvio Steam
+    sudo mkdir -p "${cachy_mnt}/usr/local/bin" "${cachy_mnt}/etc/xdg/autostart"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/bin/ps5-desktop-notify" >/dev/null
+#!/bin/bash
+# ps5-desktop-notify: mostra avvisi importanti all'avvio del Desktop KDE Plasma
+ALERT_FILE="${HOME}/.config/ps5-steam-firstboot-alert.txt"
+if [ -f "$ALERT_FILE" ]; then
+    sleep 3
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "PS5 CachyOS Gaming Mode" --msgbox "$(cat "$ALERT_FILE")" 2>/dev/null || true
+    elif command -v notify-send >/dev/null 2>&1; then
+        notify-send -u critical -t 15000 "PS5 CachyOS" "$(cat "$ALERT_FILE")" 2>/dev/null || true
+    fi
+    rm -f "$ALERT_FILE" 2>/dev/null || true
+fi
+EOF
+    sudo chmod 0755 "${cachy_mnt}/usr/local/bin/ps5-desktop-notify"
+
+    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/xdg/autostart/ps5-desktop-notify.desktop" >/dev/null
+[Desktop Entry]
+Type=Application
+Name=PS5 Desktop Notifications
+Exec=/usr/local/bin/ps5-desktop-notify
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+EOF
+    sudo chmod 0644 "${cachy_mnt}/etc/xdg/autostart/ps5-desktop-notify.desktop"
+
     log_success "Modulo KDE Plasma 6 configurato con successo."
     return 0
 }
