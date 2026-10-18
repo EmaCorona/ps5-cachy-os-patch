@@ -13,10 +13,12 @@ source "$REPO_DIR/lib/core/env.sh"
 source "$REPO_DIR/lib/core/disk.sh"
 
 # Caricamento moduli necessari al ripristino boot
+source "$REPO_DIR/lib/modules/cleanup.sh"
 source "$REPO_DIR/lib/modules/vram.sh"
 source "$REPO_DIR/lib/modules/network.sh"
 source "$REPO_DIR/lib/modules/fan.sh"
 source "$REPO_DIR/lib/modules/session.sh"
+source "$REPO_DIR/lib/modules/system.sh"
 
 check_root
 
@@ -33,16 +35,22 @@ fi
 # 1. Controllo integrità filesystem
 disk_check_integrity "${ROOT_DEV:-}" "$CACHY_MNT"
 
-# 2. Modulo Rete e rimozione modulo difettoso mt7921e (causa panic a t=12s)
+# 2. Bonifica stato, lock orfani e coredump
+module_cleanup_run "$CACHY_MNT" "$BOOT_MNT"
+
+# 3. Protezione coredump, filesystem e auto-riparazione
+module_system_run "$CACHY_MNT" "$BOOT_MNT"
+
+# 4. Modulo Rete e rimozione modulo difettoso mt7921e (causa panic a t=12s)
 module_network_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 3. Modulo VRAM 4 GB (dedicata AMDGPU)
+# 5. Modulo VRAM 4 GB (dedicata AMDGPU)
 module_vram_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 4. Modulo Ventole (Daemon Silent-Gaming)
+# 6. Modulo Ventole (Daemon Silent-Gaming)
 module_fan_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 5. Modulo Sessione (KDE Plasma 6 + Gamescope DRM 1080p60 + cap_sys_nice)
+# 7. Modulo Sessione (KDE Plasma 6 + Gamescope DRM 1080p60 + cap_sys_nice)
 module_session_run "$CACHY_MNT" "$BOOT_MNT"
 
 # 6. Sincronizzazione filesystem

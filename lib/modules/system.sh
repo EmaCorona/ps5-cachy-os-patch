@@ -41,7 +41,33 @@ module_system_run() {
     fi
     sudo mkdir -p "${cachy_mnt}/var/log/journal"
 
-    # 4. Protezione grow-rootfs contro comandi mancanti
+    # 4. Disabilita salvataggio di file coredump pesanti su disco (previene flood I/O e corruzioni flash USB)
+    sudo mkdir -p "${cachy_mnt}/etc/systemd/coredump.conf.d"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/systemd/coredump.conf.d/ps5.conf" >/dev/null
+[Coredump]
+Storage=none
+ProcessSizeMax=0
+EOF
+    sudo chmod 0644 "${cachy_mnt}/etc/systemd/coredump.conf.d/ps5.conf"
+
+    # 5. Ottimizzazione opzioni mount fstab per ext4 su memoria USB
+    if [ -f "${cachy_mnt}/etc/fstab" ]; then
+        if grep -q "LABEL=cachyos" "${cachy_mnt}/etc/fstab" && ! grep -q "commit=" "${cachy_mnt}/etc/fstab"; then
+            sudo sed -i 's/LABEL=cachyos \/ ext4 defaults/LABEL=cachyos \/ ext4 defaults,noatime,commit=15,errors=remount-ro/' "${cachy_mnt}/etc/fstab"
+        fi
+    fi
+
+    # 6. Auto-riparazione filesystem nel kernel cmdline.txt
+    if [ -n "$boot_mnt" ] && [ -f "$boot_mnt/cmdline.txt" ]; then
+        if ! grep -q "fsck.repair" "$boot_mnt/cmdline.txt"; then
+            local cmdline
+            cmdline=$(cat "$boot_mnt/cmdline.txt" | tr -d '\r\n')
+            echo "${cmdline} fsck.mode=auto fsck.repair=yes" > "$boot_mnt/cmdline.txt"
+            log_info "Aggiunti parametri fsck.mode=auto fsck.repair=yes in cmdline.txt"
+        fi
+    fi
+
+    # 7. Protezione grow-rootfs contro comandi mancanti
     local grow_svc="${cachy_mnt}/etc/systemd/system/grow-rootfs.service"
     if [ -f "$grow_svc" ]; then
         if ! grep -q "ConditionPathExists" "$grow_svc"; then

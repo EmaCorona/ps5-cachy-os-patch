@@ -47,6 +47,13 @@ setup_sandbox() {
     echo "cmdline initial" > "$MOCK_BOOT/cmdline.txt"
     echo "0x80000000" > "$MOCK_BOOT/vram.txt"
     echo -e "[Journal]\nStorage=auto" > "$MOCK_ROOT/etc/systemd/journald.conf"
+    echo "LABEL=cachyos / ext4 defaults 0 1" > "$MOCK_ROOT/etc/fstab"
+
+    # File orfani per test di pulizia stato
+    mkdir -p "$MOCK_ROOT/home/steam/.steam" "$MOCK_ROOT/var/lib/systemd/coredump" "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes"
+    touch "$MOCK_ROOT/home/steam/.steam/steam.pid" "$MOCK_ROOT/home/steam/.steam/steam.pipe"
+    touch "$MOCK_ROOT/var/lib/systemd/coredump/core.test.1234.zst"
+    touch "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes/crash.test.ini"
 }
 
 teardown_sandbox() {
@@ -243,6 +250,62 @@ test_module_system() {
     else
         say_fail "journald non configurato come persistente"
     fi
+
+    # Verifica soppressione salvataggio file coredump pesanti
+    local coredump_conf="$MOCK_ROOT/etc/systemd/coredump.conf.d/ps5.conf"
+    if [ -f "$coredump_conf" ] && grep -q "Storage=none" "$coredump_conf" && grep -q "ProcessSizeMax=0" "$coredump_conf"; then
+        say_pass "Coredump su disco disabilitato (Storage=none, ProcessSizeMax=0)"
+    else
+        say_fail "Drop-in coredump non configurato per sopprimere file su disco"
+    fi
+
+    # Verifica ottimizzazione fstab
+    if [ -f "$MOCK_ROOT/etc/fstab" ] && grep -q "commit=15" "$MOCK_ROOT/etc/fstab"; then
+        say_pass "fstab ottimizzato con parametri di sicurezza (commit=15, noatime)"
+    else
+        say_fail "fstab non ottimizzato con parametri di sicurezza"
+    fi
+
+    # Verifica cmdline.txt per auto-riparazione fsck
+    if [ -f "$MOCK_BOOT/cmdline.txt" ] && grep -q "fsck.repair=yes" "$MOCK_BOOT/cmdline.txt"; then
+        say_pass "cmdline.txt configurato con fsck.mode=auto fsck.repair=yes"
+    else
+        say_fail "cmdline.txt privo di parametri auto-riparazione fsck"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 7. Test Modulo Cleanup (Bonifica stato orfano, lock residui e coredump)
+# ------------------------------------------------------------------------------
+test_module_cleanup() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/cleanup.sh"
+
+    module_cleanup_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    # Verifica rimozione file steam.pid e steam.pipe
+    if [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pid" ] && [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pipe" ]; then
+        say_pass "File orfani steam.pid e steam.pipe rimossi correttamente"
+    else
+        say_fail "File orfani steam.pid o steam.pipe ancora presenti"
+    fi
+
+    # Verifica svuotamento cartelle coredump e drkonqi
+    local dump_count
+    dump_count=$(find "$MOCK_ROOT/var/lib/systemd/coredump" -type f | wc -l)
+    if [ "$dump_count" -eq 0 ]; then
+        say_pass "Coredump residui rimossi con successo"
+    else
+        say_fail "Coredump residui ancora presenti in /var/lib/systemd/coredump"
+    fi
+
+    # Verifica script e servizio ps5-boot-cleanup
+    if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup" ] && \
+       [ -f "$MOCK_ROOT/etc/systemd/system/ps5-boot-cleanup.service" ]; then
+        say_pass "Servizio e script ps5-boot-cleanup installati ed eseguibili"
+    else
+        say_fail "ps5-boot-cleanup o relativo servizio non installati"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -358,6 +421,7 @@ echo " Avvio Test Suite ps5-cachy-os-patch (Hardware-Free Sandbox)"
 echo "=============================================================================="
 
 run_test test_syntax
+run_test test_module_cleanup
 run_test test_module_vram
 run_test test_module_network
 run_test test_module_fan

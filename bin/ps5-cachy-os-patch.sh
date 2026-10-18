@@ -15,7 +15,7 @@ source "$REPO_DIR/lib/core/backup.sh"
 
 # Caricamento dinamico dei moduli
 MODULES_DIR="$REPO_DIR/lib/modules"
-ALL_MODULES=(vram firstboot bluetooth network fan session system)
+ALL_MODULES=(cleanup vram firstboot bluetooth network fan session system)
 
 for mod in "${ALL_MODULES[@]}"; do
     if [ -f "$MODULES_DIR/${mod}.sh" ]; then

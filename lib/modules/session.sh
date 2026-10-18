@@ -120,6 +120,13 @@ EOF
         log_success "Assegnato cap_sys_nice a gamescope."
     fi
 
+    # 6. Aggiorna steamos-session-select per terminare pulitamente i target Plasma (previene crash loop)
+    if [ -f "${cachy_mnt}/usr/bin/steamos-session-select" ]; then
+        if ! grep -q "plasma-workspace-wayland.target" "${cachy_mnt}/usr/bin/steamos-session-select"; then
+            sudo sed -i '/pkill -u steam plasmashell/i \        systemctl --user stop plasma-workspace-wayland.target plasma-core.target 2>/dev/null || true' "${cachy_mnt}/usr/bin/steamos-session-select"
+        fi
+    fi
+
     log_success "Modulo Sessione completato (Desktop KDE Plasma 6 + Gamescope 1080p60)."
     return 0
 }
