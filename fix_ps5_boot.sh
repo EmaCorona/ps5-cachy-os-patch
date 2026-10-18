@@ -13,6 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 log_step() { echo -e "\n${BLUE}==>${NC} ${1}"; }
+log_info() { echo -e "${BLUE}[INFO]${NC} ${1}"; }
 log_success() { echo -e "${GREEN}[OK]${NC} ${1}"; }
 log_warn() { echo -e "${YELLOW}[ATTENZIONE]${NC} ${1}"; }
 log_error() { echo -e "${RED}[ERRORE]${NC} ${1}"; exit 1; }
@@ -139,17 +140,45 @@ if [ -f "${CACHY_MNT}/usr/local/bin/ps5-fan-daemon" ]; then
     log_success "ps5-fan-daemon presente con profilo bilanciato."
 fi
 
-# 6. Ripristino Sessione Desktop KDE Plasma 6 (Bypass Gamescope Headless)
-log_step "6. Configurazione sessione predefinita su KDE Plasma 6..."
+# 6. Configurazione Gamescope e ripristino sessione
+log_step "6. Configurazione Gamescope (DRM Mode + Risoluzione 1080p + Realtime)..."
 mkdir -p "${CACHY_MNT}/home/steam/.config"
 echo "desktop" > "${CACHY_MNT}/home/steam/.config/ps5-next-session"
 chown -R 1000:1000 "${CACHY_MNT}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 chmod 0644 "${CACHY_MNT}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 
-if [ -f "${CACHY_MNT}/usr/bin/gamescope-session-ps5" ]; then
-    sed -i '/--backend drm/d' "${CACHY_MNT}/usr/bin/gamescope-session-ps5"
+# Assegna CAP_SYS_NICE a gamescope per permettere lo scheduling realtime ed evitare race condition
+if [ -f "${CACHY_MNT}/usr/bin/gamescope" ]; then
+    setcap 'cap_sys_nice=eip' "${CACHY_MNT}/usr/bin/gamescope" 2>/dev/null || true
+    log_success "Assegnato cap_sys_nice a gamescope."
 fi
-log_success "Sessione impostata su desktop (KDE Plasma 6 Wayland)."
+
+cat << 'EOF' > "${CACHY_MNT}/usr/bin/gamescope-session-ps5"
+#!/bin/bash
+# gamescope-session-ps5: launch Gamescope in DRM mode for PS5 external display
+export LIBSEAT_BACKEND=logind
+export STEAM_ENABLE_DECK_UI=1
+export GAMESCOPE_FORCE_GRAB_CURSOR=1
+
+# Attesa per rilascio master DRM da parte della sessione precedente
+sleep 1
+
+LOG_FILE="/home/steam/.gamescope.log"
+
+exec /usr/bin/gamescope \
+    -W 1920 -H 1080 \
+    -w 1920 -h 1080 \
+    -r 60 \
+    --backend drm \
+    --prefer-output DP-1 \
+    --sdr-gamut-wideness 0 \
+    --force-grab-cursor \
+    -e \
+    -- /usr/bin/steam -gamepadui >"$LOG_FILE" 2>&1
+EOF
+chmod 0755 "${CACHY_MNT}/usr/bin/gamescope-session-ps5"
+log_success "Script gamescope-session-ps5 aggiornato (1080p60, backend DRM, log attivo)."
+log_success "Sessione predefinita impostata su desktop (KDE Plasma 6 Wayland)."
 
 # 7. Sincronizzazione filesystem
 log_step "7. Sincronizzazione dati su disco..."

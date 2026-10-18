@@ -425,19 +425,35 @@ sudo chmod 0755 "${CACHY_MNT}/etc/profile.d/ps5-tty-session.sh"
 
 cat << 'EOF' | sudo tee "${CACHY_MNT}/usr/bin/gamescope-session-ps5" >/dev/null
 #!/bin/bash
+# gamescope-session-ps5: launch Gamescope in DRM mode for PS5 external display
 export LIBSEAT_BACKEND=logind
-export WLR_LIBINPUT_NO_DEVICES=1
 export STEAM_ENABLE_DECK_UI=1
+export GAMESCOPE_FORCE_GRAB_CURSOR=1
+
+# Attesa per rilascio master DRM da parte della sessione precedente
+sleep 1
+
+LOG_FILE="/home/steam/.gamescope.log"
 
 exec /usr/bin/gamescope \
-    -e \
+    -W 1920 -H 1080 \
+    -w 1920 -h 1080 \
+    -r 60 \
+    --backend drm \
     --prefer-output DP-1 \
     --sdr-gamut-wideness 0 \
-    -- \
-    /usr/bin/steam -gamepadui
+    --force-grab-cursor \
+    -e \
+    -- /usr/bin/steam -gamepadui >"$LOG_FILE" 2>&1
 EOF
 sudo chmod 0755 "${CACHY_MNT}/usr/bin/gamescope-session-ps5"
-log_success "Desktop KDE Plasma impostato come sicuro e Gamescope allineato."
+
+# Assegna CAP_SYS_NICE a gamescope per permettere lo scheduling realtime ed evitare race condition
+if [ -f "${CACHY_MNT}/usr/bin/gamescope" ]; then
+    sudo setcap 'cap_sys_nice=eip' "${CACHY_MNT}/usr/bin/gamescope" 2>/dev/null || true
+    log_success "Assegnato cap_sys_nice a gamescope."
+fi
+log_success "Desktop KDE Plasma impostato come sicuro e Gamescope allineato (1080p60 DRM)."
 
 # ------------------------------------------------------------------------------
 # 7. Sudoers, Machine-ID e Diagnostica
