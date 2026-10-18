@@ -4,14 +4,14 @@
 # ==============================================================================
 
 module_ethernet_info() {
-    echo "Supporto rete cablata Ethernet (MediaTek mts, offload netlink via NM, IPv6 disabled per-conn e diagnostica post-boot)"
+    echo "Supporto rete cablata Ethernet (MediaTek mts, offload netlink via NM, sync orologio NTP/HTTP per TLS/Steam, IPv4 precedence e diagnostica post-boot)"
 }
 
 module_ethernet_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    log_step "Modulo Ethernet: Configurazione rete cablata Salina GBE (profilo NM netlink, DHCP e diagnostica)..."
+    log_step "Modulo Ethernet: Configurazione rete cablata Salina GBE (profilo NM, sync orologio TLS/NTP, IPv4 precedence e diagnostica)..."
 
     if [ -z "$cachy_mnt" ] || [ ! -d "$cachy_mnt" ]; then
         log_error "Root filesystem CachyOS non trovato."
@@ -94,7 +94,88 @@ feature-rx=false
 EOF
     sudo chmod 0600 "${cachy_mnt}/etc/NetworkManager/system-connections/ps5-ethernet-eth0.nmconnection"
 
-    # 3. Collector diagnostico di rete post-boot (ps5-net-diag)
+    # 3. Sincronizzazione Orologio di Sistema (fondamentale su PS5 priva di RTC PC per validazione certificati TLS/SSL)
+    # 3a. Aggiorna i file di epoch con l'orologio corrente del PC così systemd avvia la PS5 già con data valida
+    sudo mkdir -p "${cachy_mnt}/usr/lib" "${cachy_mnt}/var/lib/systemd/timesync"
+    sudo touch "${cachy_mnt}/usr/lib/clock-epoch" "${cachy_mnt}/var/lib/systemd/timesync/clock"
+
+    # 3b. Configura e abilita systemd-timesyncd con server NTP IP diretti (Cloudflare) + hostname
+    sudo mkdir -p "${cachy_mnt}/etc/systemd/timesyncd.conf.d" "${cachy_mnt}/etc/systemd/system/sysinit.target.wants"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/systemd/timesyncd.conf.d/ps5-ntp.conf" >/dev/null
+[Time]
+NTP=162.159.200.1 162.159.200.123 time.cloudflare.com pool.ntp.org
+FallbackNTP=0.arch.pool.ntp.org 1.arch.pool.ntp.org 2.arch.pool.ntp.org 3.arch.pool.ntp.org
+ConnectionRetrySec=5
+EOF
+    sudo chmod 0644 "${cachy_mnt}/etc/systemd/timesyncd.conf.d/ps5-ntp.conf"
+
+    sudo ln -sf "/usr/lib/systemd/system/systemd-timesyncd.service" \
+        "${cachy_mnt}/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service" 2>/dev/null || true
+    sudo ln -sf "/usr/lib/systemd/system/systemd-timesyncd.service" \
+        "${cachy_mnt}/etc/systemd/system/dbus-org.freedesktop.timesync1.service" 2>/dev/null || true
+
+    # 3c. Dispatcher NetworkManager: forza sync orario immediato su link up (con fallback HTTP Date se UDP/123 è bloccato)
+    sudo mkdir -p "${cachy_mnt}/etc/NetworkManager/dispatcher.d"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh" >/dev/null
+#!/bin/sh
+# 10-ps5-time-sync.sh: sincronizza l'orologio PS5 appena sale la rete (evita errori TLS X509_V_ERR_CERT_NOT_YET_VALID su Steam/HTTPS)
+IFACE="$1"
+ACTION="$2"
+
+case "$ACTION" in
+    up|dhcp4-change|connectivity-change) ;;
+    *) exit 0 ;;
+esac
+
+case "$IFACE" in
+    lo) exit 0 ;;
+esac
+
+# Avvia/riavvia systemd-timesyncd per forzare il poll NTP immediato
+systemctl restart systemd-timesyncd.service 2>/dev/null || true
+
+# Attende fino a 2 secondi il sync NTP; se UDP/123 è filtrato o lento, usa l'header HTTP Date in chiaro
+i=0
+while [ $i -lt 4 ]; do
+    if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+        touch /var/lib/systemd/timesync/clock 2>/dev/null || true
+        exit 0
+    fi
+    sleep 0.5
+    i=$((i + 1))
+done
+
+HTTP_DATE=""
+if command -v curl >/dev/null 2>&1; then
+    for url in "http://1.1.1.1" "http://detectportal.firefox.com/canonical.html"; do
+        HTTP_DATE=$(curl -sI --max-time 3 "$url" 2>/dev/null | awk 'BEGIN{IGNORECASE=1} /^Date:/ {sub(/^[Dd]ate:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit}')
+        [ -n "$HTTP_DATE" ] && break
+    done
+fi
+
+if [ -n "$HTTP_DATE" ]; then
+    date -u -s "$HTTP_DATE" >/dev/null 2>&1 || true
+    touch /var/lib/systemd/timesync/clock 2>/dev/null || true
+fi
+
+exit 0
+EOF
+    sudo chmod 0755 "${cachy_mnt}/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh"
+
+    # 4. Precedenza IPv4 di sistema in /etc/gai.conf (evita tentativi IPv6 AAAA prioritari quando IPv6 è disabilitato sul link)
+    sudo mkdir -p "${cachy_mnt}/etc"
+    if [ -f "${cachy_mnt}/etc/gai.conf" ]; then
+        if ! grep -q "^precedence ::ffff:0:0/96[[:space:]]*100" "${cachy_mnt}/etc/gai.conf"; then
+            printf "\n# PS5 IPv4 preference\nprecedence ::ffff:0:0/96  100\n" | sudo tee -a "${cachy_mnt}/etc/gai.conf" >/dev/null
+        fi
+    else
+        cat << 'EOF' | sudo tee "${cachy_mnt}/etc/gai.conf" >/dev/null
+# PS5 IPv4 preference
+precedence ::ffff:0:0/96  100
+EOF
+    fi
+
+    # 5. Collector diagnostico di rete post-boot (ps5-net-diag)
     sudo mkdir -p "${cachy_mnt}/usr/local/sbin"
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-net-diag" >/dev/null
 #!/bin/sh
@@ -112,6 +193,9 @@ OUT="$OUT_DIR/net.txt"
 
 {
     echo "=== PS5 Post-Boot Network Diagnostics ($(date -Is 2>/dev/null || date)) ==="
+    echo ""
+    echo "--- 0. Stato Orologio e NTP (timedatectl) ---"
+    timedatectl status 2>&1 || true
     echo ""
     echo "--- 1. Interfacce e Contatori Traffico (ip -s link) ---"
     ip -s link 2>&1 || true
@@ -132,7 +216,7 @@ OUT="$OUT_DIR/net.txt"
     echo ""
     nmcli connection show --active 2>&1 || true
     echo ""
-    echo "--- 6. Test Connettività (Gateway, 1.1.1.1, DNS Steam) ---"
+    echo "--- 6. Test Connettività (Gateway, 1.1.1.1, DNS e HTTPS Steam) ---"
     GW=$(ip route show default 2>/dev/null | awk '/default/ {print $3; exit}')
     if [ -n "$GW" ]; then
         echo "Ping Gateway ($GW):"
@@ -145,13 +229,16 @@ OUT="$OUT_DIR/net.txt"
     ping -c 3 -W 2 1.1.1.1 2>&1 || true
     echo ""
     echo "Risoluzione DNS client-update.steamstatic.com:"
-    getent hosts client-update.steamstatic.com 2>&1 || true
+    getent ahostsv4 client-update.steamstatic.com 2>&1 || getent hosts client-update.steamstatic.com 2>&1 || true
+    echo ""
+    echo "Test HTTPS/TLS Steam (https://client-update.steamstatic.com/steam_client_ubuntu12):"
+    curl -ILsS --max-time 5 https://client-update.steamstatic.com/steam_client_ubuntu12 2>&1 || true
     echo ""
     echo "--- 7. Messaggi Kernel Rete (dmesg) ---"
     dmesg 2>/dev/null | grep -i -E "mts|enp64s0f2|eth0|wlan|mlan|mt7921|rtw|cfg80211|link" | tail -n 100 || true
     echo ""
-    echo "--- 8. Log NetworkManager (ultime 200 righe) ---"
-    journalctl -b -u NetworkManager -n 200 --no-pager 2>&1 || true
+    echo "--- 8. Log NetworkManager e Timesyncd (ultime 200 righe) ---"
+    journalctl -b -u NetworkManager -u systemd-timesyncd -n 200 --no-pager 2>&1 || true
 } > "$OUT" 2>&1
 
 chmod 0644 "$OUT" 2>/dev/null || true
@@ -187,12 +274,12 @@ EOF
     sudo ln -sf "/etc/systemd/system/ps5-net-diag.timer" \
         "${cachy_mnt}/etc/systemd/system/timers.target.wants/ps5-net-diag.timer" 2>/dev/null || true
 
-    # 4. Abilita NetworkManager.service
+    # 6. Abilita NetworkManager.service
     sudo mkdir -p "${cachy_mnt}/etc/systemd/system/multi-user.target.wants"
     sudo ln -sf "/usr/lib/systemd/system/NetworkManager.service" \
         "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/NetworkManager.service" 2>/dev/null || true
 
-    log_success "Modulo Ethernet configurato con successo (offload NM netlink, IPv6 disabled per-conn e ps5-net-diag)."
+    log_success "Modulo Ethernet configurato con successo (offload NM, sync orologio NTP/HTTP, IPv4 precedence e ps5-net-diag)."
     return 0
 }
 
@@ -201,11 +288,16 @@ module_ethernet_check() {
     local boot_mnt="$2"
 
     local nm_conn="${cachy_mnt}/etc/NetworkManager/system-connections/ps5-ethernet.nmconnection"
+    local ntp_conf="${cachy_mnt}/etc/systemd/timesyncd.conf.d/ps5-ntp.conf"
+    local time_disp="${cachy_mnt}/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh"
+    local gai_conf="${cachy_mnt}/etc/gai.conf"
     local diag_timer="${cachy_mnt}/etc/systemd/system/ps5-net-diag.timer"
 
     if [ -f "$nm_conn" ] && grep -q "feature-tso=false" "$nm_conn" && \
-       grep -q "method=disabled" "$nm_conn" && [ -f "$diag_timer" ]; then
-        log_success "Configurazione Ethernet (profilo nmconnection con [ethtool] e ps5-net-diag.timer) presente."
+       grep -q "method=disabled" "$nm_conn" && [ -f "$ntp_conf" ] && \
+       [ -x "$time_disp" ] && [ -f "$gai_conf" ] && \
+       grep -q "^precedence ::ffff:0:0/96" "$gai_conf" && [ -f "$diag_timer" ]; then
+        log_success "Configurazione Ethernet (profilo nmconnection, sync orario NTP/HTTP, gai.conf e ps5-net-diag) presente."
         return 0
     fi
     log_warn "Configurazione Ethernet non completa."

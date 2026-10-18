@@ -177,6 +177,24 @@ test_module_ethernet() {
         say_fail "Collector diagnostico ps5-net-diag mancante o non abilitato"
     fi
 
+    # Verifica sincronizzazione orologio (clock-epoch, systemd-timesyncd e dispatcher HTTP Date fallback)
+    if [ -f "$MOCK_ROOT/usr/lib/clock-epoch" ] && \
+       [ -f "$MOCK_ROOT/var/lib/systemd/timesync/clock" ] && \
+       [ -f "$MOCK_ROOT/etc/systemd/timesyncd.conf.d/ps5-ntp.conf" ] && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service" ] && \
+       [ -x "$MOCK_ROOT/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh" ]; then
+        say_pass "Sincronizzazione orologio PS5 (clock-epoch, systemd-timesyncd e dispatcher 10-ps5-time-sync.sh) configurata"
+    else
+        say_fail "Sincronizzazione orologio PS5 incompleta (clock-epoch / timesyncd / dispatcher)"
+    fi
+
+    # Verifica precedenza IPv4 in /etc/gai.conf
+    if [ -f "$MOCK_ROOT/etc/gai.conf" ] && grep -q "^precedence ::ffff:0:0/96[[:space:]]*100" "$MOCK_ROOT/etc/gai.conf"; then
+        say_pass "Precedenza IPv4 configurata in /etc/gai.conf"
+    else
+        say_fail "Precedenza IPv4 mancante in /etc/gai.conf"
+    fi
+
     # Verifica NetworkManager abilitato
     if [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/NetworkManager.service" ]; then
         say_pass "NetworkManager.service abilitato in multi-user.target.wants"
