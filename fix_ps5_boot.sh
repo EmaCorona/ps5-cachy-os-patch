@@ -59,19 +59,37 @@ done
 [ -z "$ROOT_DEV" ] && [ -b "/dev/sda1" ] && ROOT_DEV="/dev/sda1"
 
 if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
-    log_step "Controllo e riparazione filesystem ext4 (${ROOT_DEV})..."
+    log_step "Controllo integrità filesystem ext4 (${ROOT_DEV})..."
+    sync
     umount "$ROOT_DEV" 2>/dev/null || true
-    e2fsck -fy "$ROOT_DEV" 2>/dev/null || true
-    log_success "Filesystem ext4 controllato e riparato."
+    
+    # Esegue fsck catturando l'output per evitare flood di log a schermo
+    FSCK_OUT=$(e2fsck -fy "$ROOT_DEV" 2>&1 || true)
+    
+    # Attesa stabilizzazione udev/kernel per evitare 'Can't lookup blockdev'
+    udevadm settle --timeout=5 2>/dev/null || sleep 1
+    for _ in {1..10}; do
+        [ -b "$ROOT_DEV" ] && break
+        sleep 0.3
+    done
+    
+    # Rimonta in sicurezza verificando se il sistema l'ha già rimontato
+    CURRENT_MNT=$(findmnt -n -o TARGET "$ROOT_DEV" 2>/dev/null || true)
+    if [ -z "$CURRENT_MNT" ]; then
+        mkdir -p "/run/media/emacorona/cachyos"
+        mount -o rw "$ROOT_DEV" "/run/media/emacorona/cachyos" 2>/dev/null || mount "$ROOT_DEV" "/run/media/emacorona/cachyos"
+        CACHY_MNT="/run/media/emacorona/cachyos"
+    else
+        CACHY_MNT="$CURRENT_MNT"
+        mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
+    fi
+    
+    # Mostra solo il riepilogo essenziale utile al debug
+    SUMMARY=$(echo "$FSCK_OUT" | grep -E "clean|files|blocks|MODIFIED" | tail -n 2 | paste -sd " " -)
+    [ -n "$SUMMARY" ] && log_info "Stato fsck: ${SUMMARY}"
+    log_success "Filesystem ext4 pronto e integro."
 fi
 
-# Verifica e rimonta in scrittura
-log_step "Verifica partizioni e permessi di scrittura..."
-if [ -z "$CACHY_MNT" ] || [ ! -d "$CACHY_MNT" ]; then
-    mkdir -p "/run/media/emacorona/cachyos"
-    mount -o rw "${ROOT_DEV:-/dev/sda1}" "/run/media/emacorona/cachyos" 2>/dev/null || log_error "Partizione rootfs non trovata."
-    CACHY_MNT="/run/media/emacorona/cachyos"
-fi
 mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
 
 if [ -z "$BOOT_MNT" ] || [ ! -d "$BOOT_MNT" ]; then

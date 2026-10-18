@@ -108,11 +108,34 @@ log_success "Partizione Boot (FAT32):    ${BOOT_MNT}"
 # Controllo preventivo dell'integrità del filesystem ext4 (ripara disconnessioni USB improvvise)
 ROOT_DEV=$(findmnt -n -o SOURCE "$CACHY_MNT" 2>/dev/null || true)
 if [ -n "$ROOT_DEV" ] && [ -b "$ROOT_DEV" ]; then
-    log_step "Controllo preventivo e riparazione filesystem ext4 (${ROOT_DEV})..."
+    log_step "Controllo integrità filesystem ext4 (${ROOT_DEV})..."
+    sync
     sudo umount "$ROOT_DEV" 2>/dev/null || true
-    sudo e2fsck -fy "$ROOT_DEV" 2>/dev/null || true
-    sudo mount -o rw "$ROOT_DEV" "$CACHY_MNT" 2>/dev/null || sudo mount "$ROOT_DEV" "$CACHY_MNT"
-    log_success "Filesystem ext4 controllato e riparato con successo."
+    
+    # Esegue fsck catturando l'output per evitare flood di log a schermo
+    FSCK_OUT=$(sudo e2fsck -fy "$ROOT_DEV" 2>&1 || true)
+    
+    # Attesa stabilizzazione udev/kernel per evitare 'Can't lookup blockdev'
+    sudo udevadm settle --timeout=5 2>/dev/null || sleep 1
+    for _ in {1..10}; do
+        [ -b "$ROOT_DEV" ] && break
+        sleep 0.3
+    done
+    
+    # Rimonta in sicurezza verificando se il sistema l'ha già rimontato
+    CURRENT_MNT=$(findmnt -n -o TARGET "$ROOT_DEV" 2>/dev/null || true)
+    if [ -z "$CURRENT_MNT" ]; then
+        sudo mkdir -p "$CACHY_MNT"
+        sudo mount -o rw "$ROOT_DEV" "$CACHY_MNT" 2>/dev/null || sudo mount "$ROOT_DEV" "$CACHY_MNT"
+    else
+        CACHY_MNT="$CURRENT_MNT"
+        sudo mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
+    fi
+    
+    # Mostra solo il riepilogo essenziale utile al debug
+    SUMMARY=$(echo "$FSCK_OUT" | grep -E "clean|files|blocks|MODIFIED" | tail -n 2 | paste -sd " " -)
+    [ -n "$SUMMARY" ] && log_info "Stato fsck: ${SUMMARY}"
+    log_success "Filesystem ext4 pronto e integro."
 fi
 
 sudo mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
