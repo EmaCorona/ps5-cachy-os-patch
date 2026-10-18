@@ -21,20 +21,49 @@ if [ "$(id -u)" -ne 0 ]; then
     log_error "Questo script deve essere eseguito con i privilegi di root (es: sudo bash $0)"
 fi
 
-CACHY_MNT="/run/media/emacorona/cachyos"
-BOOT_MNT="/run/media/emacorona/boot"
+CACHY_MNT=""
+BOOT_MNT=""
+
+for m in $(lsblk -rno MOUNTPOINTS 2>/dev/null | grep -v '^$'); do
+    if [ -z "$CACHY_MNT" ] && [ -d "$m/etc" ] && [ -d "$m/usr" ]; then
+        CACHY_MNT="$m"
+    fi
+    if [ -z "$BOOT_MNT" ] && [ -f "$m/bzImage" ]; then
+        BOOT_MNT="$m"
+    fi
+done
+
+if [ -z "$CACHY_MNT" ]; then
+    for d in /run/media/*/cachyos /media/*/cachyos /run/media/* /media/*; do
+        if [ -d "$d/etc" ] && [ -d "$d/usr" ]; then
+            CACHY_MNT="$d"
+            break
+        fi
+    done
+fi
+
+if [ -z "$BOOT_MNT" ]; then
+    for d in /run/media/*/boot /media/*/boot /run/media/* /media/*; do
+        if [ -f "$d/bzImage" ]; then
+            BOOT_MNT="$d"
+            break
+        fi
+    done
+fi
 
 # Verifica e rimonta in scrittura
 log_step "Verifica partizioni e permessi di scrittura..."
-if [ ! -d "$CACHY_MNT" ]; then
-    mkdir -p "$CACHY_MNT"
-    mount /dev/sda1 "$CACHY_MNT" 2>/dev/null || log_error "Partizione rootfs (/dev/sda1) non trovata."
+if [ -z "$CACHY_MNT" ] || [ ! -d "$CACHY_MNT" ]; then
+    mkdir -p "/run/media/emacorona/cachyos"
+    mount /dev/sda1 "/run/media/emacorona/cachyos" 2>/dev/null || log_error "Partizione rootfs non trovata."
+    CACHY_MNT="/run/media/emacorona/cachyos"
 fi
 mount -o remount,rw "$CACHY_MNT" 2>/dev/null || true
 
-if [ ! -d "$BOOT_MNT" ]; then
-    mkdir -p "$BOOT_MNT"
-    mount /dev/sda2 "$BOOT_MNT" 2>/dev/null || log_warn "Partizione boot (/dev/sda2) non trovata in $BOOT_MNT"
+if [ -z "$BOOT_MNT" ] || [ ! -d "$BOOT_MNT" ]; then
+    mkdir -p "/run/media/emacorona/boot"
+    mount /dev/sda2 "/run/media/emacorona/boot" 2>/dev/null || log_warn "Partizione boot non trovata."
+    BOOT_MNT="/run/media/emacorona/boot"
 fi
 
 # 1. Rimozione modulo difettoso mt7921e (causa del kernel panic a t=12s)
@@ -78,8 +107,20 @@ if [ -f "${CACHY_MNT}/usr/local/bin/ps5-fan-daemon" ]; then
     log_success "ps5-fan-daemon presente con profilo bilanciato."
 fi
 
-# 6. Sincronizzazione filesystem
-log_step "6. Sincronizzazione dati su disco..."
+# 6. Ripristino Sessione Desktop KDE Plasma 6 (Bypass Gamescope Headless)
+log_step "6. Configurazione sessione predefinita su KDE Plasma 6..."
+mkdir -p "${CACHY_MNT}/home/steam/.config"
+echo "desktop" > "${CACHY_MNT}/home/steam/.config/ps5-next-session"
+chown -R 1000:1000 "${CACHY_MNT}/home/steam/.config/ps5-next-session" 2>/dev/null || true
+chmod 0644 "${CACHY_MNT}/home/steam/.config/ps5-next-session" 2>/dev/null || true
+
+if [ -f "${CACHY_MNT}/usr/bin/gamescope-session-ps5" ]; then
+    sed -i '/--backend drm/d' "${CACHY_MNT}/usr/bin/gamescope-session-ps5"
+fi
+log_success "Sessione impostata su desktop (KDE Plasma 6 Wayland)."
+
+# 7. Sincronizzazione filesystem
+log_step "7. Sincronizzazione dati su disco..."
 sync
 log_success "Tutte le correzioni sono state applicate con successo!"
 echo -e "\n${GREEN}Ora puoi smontare la chiavetta USB e avviare la PS5.${NC}"

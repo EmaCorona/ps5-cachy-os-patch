@@ -64,26 +64,32 @@ log_step "Rilevamento delle partizioni microSD (CachyOS)..."
 CACHY_MNT=""
 BOOT_MNT=""
 
-for p in $(lsblk -rno MOUNTPOINTS,LABEL 2>/dev/null | awk '$2=="cachyos" {print $1}'); do
-    if [ -d "$p" ] && [ -d "$p/etc" ] && [ -d "$p/usr" ]; then
-        CACHY_MNT="$p"
-        break
+for m in $(lsblk -rno MOUNTPOINTS 2>/dev/null | grep -v '^$'); do
+    if [ -z "$CACHY_MNT" ] && [ -d "$m/etc" ] && [ -d "$m/usr" ]; then
+        CACHY_MNT="$m"
+    fi
+    if [ -z "$BOOT_MNT" ] && [ -f "$m/bzImage" ]; then
+        BOOT_MNT="$m"
     fi
 done
 
-for p in $(lsblk -rno MOUNTPOINTS,LABEL 2>/dev/null | awk '$2=="boot" {print $1}'); do
-    if [ -d "$p" ] && [ -f "$p/bzImage" ]; then
-        BOOT_MNT="$p"
-        break
-    fi
-done
-
-# Fallback su cartelle standard /run/media/$USER
-if [ -z "$CACHY_MNT" ] && [ -d "/run/media/${USER}/cachyos" ]; then
-    CACHY_MNT="/run/media/${USER}/cachyos"
+# Fallback avanzato su cartelle standard /run/media/* e /media/*
+if [ -z "$CACHY_MNT" ]; then
+    for d in /run/media/*/cachyos /media/*/cachyos /run/media/* /media/*; do
+        if [ -d "$d/etc" ] && [ -d "$d/usr" ]; then
+            CACHY_MNT="$d"
+            break
+        fi
+    done
 fi
-if [ -z "$BOOT_MNT" ] && [ -d "/run/media/${USER}/boot" ]; then
-    BOOT_MNT="/run/media/${USER}/boot"
+
+if [ -z "$BOOT_MNT" ]; then
+    for d in /run/media/*/boot /media/*/boot /run/media/* /media/*; do
+        if [ -f "$d/bzImage" ]; then
+            BOOT_MNT="$d"
+            break
+        fi
+    done
 fi
 
 if [ -z "$CACHY_MNT" ] || [ ! -d "$CACHY_MNT" ]; then
@@ -357,11 +363,16 @@ export LIBSEAT_BACKEND=logind
 
 case "$SESSION" in
   gamescope)
+    # Reset di sicurezza: se gamescope fallisce o si riavvia, il boot successivo torna a KDE
+    echo "desktop" >"$SESSION_FILE" 2>/dev/null || true
     export WLR_LIBINPUT_NO_DEVICES=1
     exec /usr/bin/gamescope-session-ps5
     ;;
   desktop|plasma|*)
     echo "desktop" >"$SESSION_FILE"
+    export XDG_SESSION_TYPE=wayland
+    export XDG_CURRENT_DESKTOP=KDE
+    export KDE_SESSION_VERSION=6
     PLASMA_DBUS_WRAP=""
     [ -x /usr/lib/plasma-dbus-run-session-if-needed ] && PLASMA_DBUS_WRAP=/usr/lib/plasma-dbus-run-session-if-needed
     _run_plasma_dbus() {
@@ -383,9 +394,9 @@ cat << 'EOF' | sudo tee "${CACHY_MNT}/usr/bin/gamescope-session-ps5" >/dev/null
 #!/bin/bash
 export LIBSEAT_BACKEND=logind
 export WLR_LIBINPUT_NO_DEVICES=1
+export STEAM_ENABLE_DECK_UI=1
 
 exec /usr/bin/gamescope \
-    --backend drm \
     -e \
     --prefer-output DP-1 \
     --sdr-gamut-wideness 0 \
