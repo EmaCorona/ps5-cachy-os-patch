@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# tests/stubs/depmod
+echo "depmod $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# tests/stubs/sudo - sandbox wrapper to run commands without real sudo
+"$@"

@@ -33,10 +33,25 @@ Collega la chiavetta USB / microSD contenente CachyOS PS5 al tuo computer Linux 
 ```bash
 git clone https://github.com/EmaCorona/ps5-cachy-os-patch.git
 cd ps5-cachy-os-patch
-sudo bash ps5-cachy-os-patch.sh
+sudo ./ps5-cachy-os-patch.sh
 ```
 
 Lo script rileverà automaticamente le partizioni montate (`boot` in FAT32 e `cachyos` in ext4), applicherà tutte le patch in sequenza e sincronizzerà i filesystem.
+
+#### Esecuzione Selettiva dei Moduli (CLI)
+Grazie alla nuova architettura modulare, puoi eseguire singoli moduli o verificare lo stato:
+
+```bash
+# Elenca tutti i moduli disponibili
+./ps5-cachy-os-patch.sh --list-modules
+
+# Esegui solo un modulo specifico (es. ventole o sessione)
+sudo ./ps5-cachy-os-patch.sh --module fan
+sudo ./ps5-cachy-os-patch.sh --module session
+
+# Verifica preventiva senza scritture su disco
+sudo ./ps5-cachy-os-patch.sh --dry-run
+```
 
 ---
 
@@ -44,7 +59,16 @@ Lo script rileverà automaticamente le partizioni montate (`boot` in FAT32 e `ca
 Se la tua PS5 presenta uno schermo nero ("no signal") o la ventola bloccata al massimo dei giri a causa di crash nei moduli del kernel:
 
 ```bash
-sudo bash fix_ps5_boot.sh
+sudo ./fix_ps5_boot.sh
+```
+
+---
+
+### 3. Suite di Test Automatizzata (Hardware-Free)
+Il progetto include una suite di test estesa eseguibile in sandbox senza hardware reale per garantire l'assenza di regressioni:
+
+```bash
+bash tests/run-all-tests.sh
 ```
 
 ---

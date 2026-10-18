@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# tests/stubs/systemctl
+echo "systemctl $*" >> "${STUB_LOG:-/dev/null}"
+exit 0

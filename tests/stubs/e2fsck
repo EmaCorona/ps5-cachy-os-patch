@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# tests/stubs/e2fsck
+echo "cachyos: clean, 100/1000 files, 500/5000 blocks"
+exit 0

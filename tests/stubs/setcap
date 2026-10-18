@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# tests/stubs/setcap - stub for setcap
+echo "setcap $*" >> "${STUB_LOG:-/dev/null}"
+exit 0
