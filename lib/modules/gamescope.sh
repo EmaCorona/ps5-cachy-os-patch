@@ -1,57 +1,136 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# lib/modules/gamescope.sh - Configurazione Gamescope Gaming Mode (1080p60 DRM)
+# lib/modules/gamescope.sh - Configurazione Gamescope Gaming Mode (Auto-rilevamento DRM)
 # ==============================================================================
 
 module_gamescope_info() {
-    echo "Configurazione Gamescope Gaming Mode (1080p60 DRM, prefer-output DP-1, cap_sys_nice, log)"
+    echo "Configurazione Gamescope Gaming Mode (auto-rilevamento risoluzione nativa DRM/EDID, cap_sys_nice, log)"
 }
 
 module_gamescope_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    log_step "Modulo Gamescope: Configurazione sessione Gamescope Gaming Mode (1080p60 DRM)..."
+    log_step "Modulo Gamescope: Configurazione sessione Gamescope Gaming Mode (auto-rilevamento risoluzione DRM)..."
 
     if [ -z "$cachy_mnt" ] || [ ! -d "$cachy_mnt" ]; then
         log_error "Root filesystem CachyOS non trovato."
         return 1
     fi
 
-    # 1. Configura gamescope-session-ps5 con parametri DRM 1080p60 e log
+    # 1. Configura template opzionale /etc/ps5-gamescope.conf se non esiste
+    sudo mkdir -p "${cachy_mnt}/etc"
+    if [ ! -f "${cachy_mnt}/etc/ps5-gamescope.conf" ]; then
+        cat << 'EOF' | sudo tee "${cachy_mnt}/etc/ps5-gamescope.conf" >/dev/null
+# /etc/ps5-gamescope.conf - Configurazione opzionale Gamescope PS5
+# Lasciare commentato per utilizzare l'auto-rilevamento dinamico nativo via DRM/EDID.
+
+# Risoluzione fisica del display (Output)
+# PS5_OUTPUT_WIDTH=1920
+# PS5_OUTPUT_HEIGHT=1080
+
+# Risoluzione interna di rendering UI e giochi (Nested)
+# Utile su TV 4K per renderizzare a 1080p e scalare in 4K con FSR:
+# PS5_NESTED_WIDTH=1920
+# PS5_NESTED_HEIGHT=1080
+
+# Refresh rate forzato (es. 60 o 120). Di default Gamescope negozia il refresh nativo dello schermo.
+# PS5_REFRESH_RATE=60
+
+# Connettore di output preferito (default: DP-1,HDMI-A-1 o auto-rilevato)
+# PS5_OUTPUT_CONN="DP-1"
+EOF
+        sudo chmod 0644 "${cachy_mnt}/etc/ps5-gamescope.conf"
+    fi
+
+    # 2. Configura gamescope-session-ps5 con auto-rilevamento risoluzione e connettore
     sudo mkdir -p "${cachy_mnt}/usr/bin"
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/bin/gamescope-session-ps5" >/dev/null
 #!/bin/bash
-# gamescope-session-ps5: launch Gamescope in DRM mode for PS5 external display
+# gamescope-session-ps5: launch Gamescope in DRM mode with dynamic display resolution detection
 export LIBSEAT_BACKEND=logind
 export STEAM_ENABLE_DECK_UI=1
 export GAMESCOPE_FORCE_GRAB_CURSOR=1
 
-# Attesa per rilascio master DRM da parte della sessione precedente
-sleep 1
-
 LOG_FILE="/home/steam/.gamescope.log"
 
-exec /usr/bin/gamescope \
-    -W 1920 -H 1080 \
-    -w 1920 -h 1080 \
-    -r 60 \
-    --backend drm \
-    --prefer-output DP-1 \
-    --sdr-gamut-wideness 0 \
-    --force-grab-cursor \
-    -e \
-    -- /usr/bin/steam -gamepadui >"$LOG_FILE" 2>&1
+# Carica eventuali override personalizzati di sistema o utente
+[ -f /etc/ps5-gamescope.conf ] && source /etc/ps5-gamescope.conf
+[ -f /home/steam/.config/gamescope/ps5-resolution.conf ] && source /home/steam/.config/gamescope/ps5-resolution.conf
+
+# 1. Attesa e scansione dello stato DRM (fino a 3s con intervalli di 0.5s per handshake HDMI)
+DETECTED_CONN=""
+DETECTED_W=""
+DETECTED_H=""
+
+for i in {1..6}; do
+    for c in /sys/class/drm/card*-*; do
+        [ -f "$c/status" ] || continue
+        if [ "$(cat "$c/status" 2>/dev/null)" = "connected" ]; then
+            c_name="${c##*/}"
+            c_port="${c_name#card*-}"
+            if [ -f "$c/modes" ] && [ -s "$c/modes" ]; then
+                top_mode=$(head -n 1 "$c/modes")
+                w="${top_mode%x*}"
+                h="${top_mode#*x}"
+                if [ -n "$w" ] && [ -n "$h" ]; then
+                    DETECTED_CONN="$c_port"
+                    DETECTED_W="$w"
+                    DETECTED_H="$h"
+                    # Priorità per uscite video PS5 (DP-1 o HDMI-A-1)
+                    case "$c_port" in
+                        DP-1|HDMI-A-1) break 2 ;;
+                    esac
+                fi
+            fi
+        fi
+    done
+    [ -n "$DETECTED_W" ] && break
+    sleep 0.5
+done
+
+# 2. Risoluzione e connettore finali (Override > Rilevamento automatico > Fallback standard)
+FINAL_OUTPUT_W="${PS5_OUTPUT_WIDTH:-${DETECTED_W:-1920}}"
+FINAL_OUTPUT_H="${PS5_OUTPUT_HEIGHT:-${DETECTED_H:-1080}}"
+FINAL_NESTED_W="${PS5_NESTED_WIDTH:-$FINAL_OUTPUT_W}"
+FINAL_NESTED_H="${PS5_NESTED_HEIGHT:-$FINAL_OUTPUT_H}"
+FINAL_CONN="${PS5_OUTPUT_CONN:-${DETECTED_CONN:-DP-1,HDMI-A-1}}"
+
+echo "[$(date -Is)] PS5 Gamescope Init: Connettore=${FINAL_CONN} (rilevato: ${DETECTED_CONN:-none}), Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}, Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}, Refresh=${PS5_REFRESH_RATE:-Auto}" >> "$LOG_FILE"
+
+# 3. Composizione argomenti Gamescope
+GAMESCOPE_CMD=(
+    /usr/bin/gamescope
+    -W "$FINAL_OUTPUT_W"
+    -H "$FINAL_OUTPUT_H"
+    -w "$FINAL_NESTED_W"
+    -h "$FINAL_NESTED_H"
+    --backend drm
+    --prefer-output "$FINAL_CONN"
+    --sdr-gamut-wideness 0
+    --force-grab-cursor
+    -e
+)
+
+# Se specificato un refresh rate esplicito (es. PS5_REFRESH_RATE=60), aggiungilo
+if [ -n "$PS5_REFRESH_RATE" ]; then
+    GAMESCOPE_CMD+=(-r "$PS5_REFRESH_RATE")
+fi
+
+# Attesa 1s per rilascio master DRM
+sleep 1
+
+exec "${GAMESCOPE_CMD[@]}" -- /usr/bin/steam -gamepadui >>"$LOG_FILE" 2>&1
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/bin/gamescope-session-ps5"
 
-    # 2. Assegna CAP_SYS_NICE a gamescope per permettere lo scheduling realtime ed evitare race condition
+    # 3. Assegna CAP_SYS_NICE a gamescope per permettere lo scheduling realtime ed evitare race condition
     if [ -f "${cachy_mnt}/usr/bin/gamescope" ]; then
         sudo setcap 'cap_sys_nice=eip' "${cachy_mnt}/usr/bin/gamescope" 2>/dev/null || true
         log_success "Assegnato cap_sys_nice a gamescope."
     fi
 
-    log_success "Modulo Gamescope configurato con successo (1080p60 DRM)."
+    log_success "Modulo Gamescope configurato con successo (auto-rilevamento DRM attivo)."
     return 0
 }
 

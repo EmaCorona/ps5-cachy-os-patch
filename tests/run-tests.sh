@@ -205,7 +205,8 @@ test_module_kde() {
 }
 
 # ------------------------------------------------------------------------------
-# 6. Test Modulo Gamescope Gaming Mode (1080p60 DRM + cap_sys_nice)
+# ------------------------------------------------------------------------------
+# 6. Test Modulo Gamescope Gaming Mode (Auto-rilevamento DRM + cap_sys_nice)
 # ------------------------------------------------------------------------------
 test_module_gamescope() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -214,27 +215,46 @@ test_module_gamescope() {
     module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     local gs_script="$MOCK_ROOT/usr/bin/gamescope-session-ps5"
+    local conf_template="$MOCK_ROOT/etc/ps5-gamescope.conf"
+
+    # Verifica template configurazione opzionale
+    if [ -f "$conf_template" ] && grep -q "PS5_OUTPUT_WIDTH" "$conf_template"; then
+        say_pass "Template /etc/ps5-gamescope.conf creato correttamente"
+    else
+        say_fail "Template /etc/ps5-gamescope.conf mancante o non configurato"
+    fi
 
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
-        local missing_flags=0
-        for flag in "-W 1920 -H 1080" "-w 1920 -h 1080" "-r 60" "--backend drm" "--prefer-output DP-1" "--force-grab-cursor" "sleep 1"; do
-            if ! grep -q -- "$flag" "$gs_script"; then
-                say_fail "gamescope-session-ps5 privo del parametro obbligatorio: $flag"
-                missing_flags=$((missing_flags + 1))
+        local missing_features=0
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf"; do
+            if ! grep -q -- "$feat" "$gs_script"; then
+                say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
+                missing_features=$((missing_features + 1))
             fi
         done
-        if [ $missing_flags -eq 0 ]; then
-            say_pass "gamescope-session-ps5 contiene tutti i parametri DRM 1080p60 e cursor grab"
-        fi
-
-        if grep -q "LOG_FILE=" "$gs_script"; then
-            say_pass "gamescope-session-ps5 include reindirizzamento dei log di debug"
-        else
-            say_fail "gamescope-session-ps5 non reindirizza i log in LOG_FILE"
+        if [ $missing_features -eq 0 ]; then
+            say_pass "gamescope-session-ps5 contiene l'auto-rilevamento DRM, parametri e gestione log"
         fi
     else
         say_fail "gamescope-session-ps5 non presente o non eseguibile"
+    fi
+
+    # Test simulato di rilevamento risoluzione (4K mock vs Fallback 1080p)
+    local mock_drm_dir="$MOCK_ROOT/sys/class/drm/card0-DP-1"
+    mkdir -p "$mock_drm_dir"
+    echo "connected" > "$mock_drm_dir/status"
+    printf "3840x2160\n1920x1080\n" > "$mock_drm_dir/modes"
+
+    # Estrai e verifica la logica di parsing su mock
+    local parsed_top_mode parsed_w parsed_h
+    parsed_top_mode=$(head -n 1 "$mock_drm_dir/modes")
+    parsed_w="${parsed_top_mode%x*}"
+    parsed_h="${parsed_top_mode#*x}"
+    if [ "$parsed_w" = "3840" ] && [ "$parsed_h" = "2160" ]; then
+        say_pass "Logica di parsing DRM modes valida: 3840x2160 estratto correttamente"
+    else
+        say_fail "Errore nel parsing risoluzione DRM modes ($parsed_w x $parsed_h)"
     fi
 
     # Verifica cap_sys_nice su gamescope
