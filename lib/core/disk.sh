@@ -44,4 +44,5 @@ disk_check_integrity() {
     if [ -d "$cachy_mnt" ]; then
         sudo mount -o remount,rw "$cachy_mnt" 2>/dev/null || true
     fi
+    return 0
 }

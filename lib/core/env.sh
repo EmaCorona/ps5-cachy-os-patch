@@ -59,6 +59,9 @@ detect_mounts() {
                 break
             fi
         done
-        [ -z "$ROOT_DEV" ] && [ -b "/dev/sda1" ] && ROOT_DEV="/dev/sda1"
+        if [ -z "$ROOT_DEV" ] && [ -b "/dev/sda1" ]; then
+            ROOT_DEV="/dev/sda1"
+        fi
     fi
+    return 0
 }

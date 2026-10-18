@@ -21,4 +21,5 @@ backup_critical_files() {
     fi
 
     log_success "Backup completato."
+    return 0
 }
