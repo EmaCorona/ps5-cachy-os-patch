@@ -61,13 +61,30 @@ EOF
         fi
     fi
 
-    # 6. Auto-riparazione filesystem nel kernel cmdline.txt
+    # 6. Kernel cmdline.txt: rimozione risoluzioni forzate e abilitazione auto-riparazione filesystem
     if [ -n "$boot_mnt" ] && [ -f "$boot_mnt/cmdline.txt" ]; then
-        if ! grep -q "fsck.repair" "$boot_mnt/cmdline.txt"; then
-            local cmdline
-            cmdline=$(cat "$boot_mnt/cmdline.txt" | tr -d '\r\n')
-            echo "${cmdline} fsck.mode=auto fsck.repair=yes" > "$boot_mnt/cmdline.txt"
+        local cmdline
+        cmdline=$(cat "$boot_mnt/cmdline.txt" | tr -d '\r\n')
+        local modified=0
+
+        # Rimuove risoluzioni video hardcoded (es. video=DP-1:1920x1080@60) per consentire
+        # a KDE Wayland e Gamescope di negoziare la risoluzione nativa del monitor/TV via EDID/KMS
+        if echo "$cmdline" | grep -qE "video=[^[:space:]]+"; then
+            cmdline=$(echo "$cmdline" | sed -E 's/video=[^[:space:]]+//g')
+            modified=1
+            log_info "Rimossa risoluzione hardcoded da cmdline.txt per consentire auto-detection EDID"
+        fi
+
+        if ! echo "$cmdline" | grep -q "fsck.repair"; then
+            cmdline="${cmdline} fsck.mode=auto fsck.repair=yes"
+            modified=1
             log_info "Aggiunti parametri fsck.mode=auto fsck.repair=yes in cmdline.txt"
+        fi
+
+        if [ "$modified" -eq 1 ]; then
+            # Normalizza spazi multipli ed elimina spazi iniziali/finali
+            cmdline=$(echo "$cmdline" | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+            echo "$cmdline" > "$boot_mnt/cmdline.txt"
         fi
     fi
 

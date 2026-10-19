@@ -684,6 +684,9 @@ test_module_system() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/system.sh"
 
+    # Simula cmdline stock con parametro video hardcoded
+    echo "console=tty0 video=DP-1:1920x1080@60 mitigations=off" > "$MOCK_BOOT/cmdline.txt"
+
     module_system_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Verifica sudoers
@@ -716,11 +719,13 @@ test_module_system() {
         say_fail "fstab non ottimizzato con parametri di sicurezza"
     fi
 
-    # Verifica cmdline.txt per auto-riparazione fsck
-    if [ -f "$MOCK_BOOT/cmdline.txt" ] && grep -q "fsck.repair=yes" "$MOCK_BOOT/cmdline.txt"; then
-        say_pass "cmdline.txt configurato con fsck.mode=auto fsck.repair=yes"
+    # Verifica cmdline.txt per rimozione risoluzione hardcoded e auto-riparazione fsck
+    if [ -f "$MOCK_BOOT/cmdline.txt" ] && \
+       ! grep -q "video=" "$MOCK_BOOT/cmdline.txt" && \
+       grep -q "fsck.repair=yes" "$MOCK_BOOT/cmdline.txt"; then
+        say_pass "cmdline.txt: rimossa risoluzione hardcoded video= ed abilitato fsck.repair=yes"
     else
-        say_fail "cmdline.txt privo di parametri auto-riparazione fsck"
+        say_fail "cmdline.txt privo di auto-riparazione fsck o con parametro video= residuo"
     fi
 
     # Verifica flush su /boot/efi vfat (idempotente)
