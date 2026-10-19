@@ -68,14 +68,22 @@ LOG_FILE="/home/steam/.gamescope.log"
 [ -f /etc/ps5-gamescope.conf ] && source /etc/ps5-gamescope.conf
 [ -f /home/steam/.config/gamescope/ps5-resolution.conf ] && source /home/steam/.config/gamescope/ps5-resolution.conf
 
+# 0. Pre-check binari essenziali Gamescope e Steam (exit 70 in caso di assenza -> Fallback KDE)
+if [ ! -x /usr/bin/gamescope ] || [ ! -x /usr/bin/steam ]; then
+    echo "[$(date -Is)] PS5 Gamescope ERRORE CRITICO: /usr/bin/gamescope o /usr/bin/steam mancante/non eseguibile." >> "$LOG_FILE"
+    exit 70
+fi
+
 # 1. Attesa e scansione dello stato DRM (fino a 3s con intervalli di 0.5s per handshake HDMI)
 DETECTED_CONN=""
 DETECTED_W=""
 DETECTED_H=""
+DRM_CARD_FOUND=0
 
 for i in {1..6}; do
     for c in /sys/class/drm/card*-*; do
         [ -f "$c/status" ] || continue
+        DRM_CARD_FOUND=1
         if [ "$(cat "$c/status" 2>/dev/null)" = "connected" ]; then
             c_name="${c##*/}"
             c_port="${c_name#card*-}"
@@ -98,6 +106,11 @@ for i in {1..6}; do
     [ -n "$DETECTED_W" ] && break
     sleep 0.5
 done
+
+if [ "$DRM_CARD_FOUND" -eq 0 ] && [ "${PS5_SKIP_DRM_CHECK:-0}" != "1" ]; then
+    echo "[$(date -Is)] PS5 Gamescope ERRORE DRM: Nessun connettore DRM/KMS rilevato in /sys/class/drm." >> "$LOG_FILE"
+    exit 71
+fi
 
 # 2. Risoluzione e connettore finali (Override > Rilevamento automatico > Fallback standard)
 FINAL_OUTPUT_W="${PS5_OUTPUT_WIDTH:-${DETECTED_W:-1920}}"
@@ -123,7 +136,7 @@ if [ ! -f "$STEAM_INSTALLED_FLAG" ]; then
     echo "[$(date -Is)] PS5 Gamescope: Steam runtime package non ancora inizializzato (primo bootstrap richiesto)." >> "$LOG_FILE"
     if ! check_network; then
         echo "[$(date -Is)] PS5 Gamescope ERRORE: Connessione di rete assente al primo avvio di Steam." >> "$LOG_FILE"
-        echo "[$(date -Is)] Ritorno a KDE Plasma Desktop per consentire la configurazione della rete (Ethernet o dongle Wi-Fi USB)." >> "$LOG_FILE"
+        echo "[$(date -Is)] Attivazione fallback automatico a KDE Plasma Desktop per consentire la configurazione della rete." >> "$LOG_FILE"
         mkdir -p "$(dirname "$SESSION_FILE")"
         echo "desktop" > "$SESSION_FILE" 2>/dev/null || true
         mkdir -p /home/steam/.config
@@ -133,7 +146,7 @@ Configura la rete da questo Desktop KDE e avvia Steam una volta per completare l
 Successivamente potrai avviare la modalità Gaming Gamescope anche offline.
 NOTIFY_EOF
         chown -R steam:steam /home/steam/.config 2>/dev/null || true
-        exit 0
+        exit 72
     fi
     echo "[$(date -Is)] Connessione presente: procedo con il primo bootstrap di Steam sotto Gamescope." >> "$LOG_FILE"
 fi

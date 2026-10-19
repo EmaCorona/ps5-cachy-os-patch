@@ -19,9 +19,10 @@ Questo strumento automatizza la post-installazione e la risoluzione di problemi 
   - Protezione contro i crash/kernel panic all'avvio causati da moduli PCIe non allineati.
 - **Bypass del First-Boot Setup**:
   - Disabilita la schermata blu iniziale a blocchi di CachyOS evitando input bloccati o freeze.
-- **Avvio Diretto su Desktop KDE Plasma 6**:
-  - Configurazione automatica dell'autologin su TTY1 impostata prioritariamente su KDE Plasma Wayland, con possibilità di switch a Gamescope Session.
-  - Aggiunta dell'utente `steam` al gruppo `render` e ai sudoers senza password.
+- **Avvio Automatico in Gamescope Mode con Fallback Intelligente su KDE Plasma 6 (`session`)**:
+  - Configura l'autologin su TTY1 per avviare automaticamente **Gamescope Gaming Mode** a ogni accensione della PS5, con rilevamento dinamico della risoluzione nativa 4K/1080p via DRM/EDID.
+  - Include un supervisore di sessione (`lib/modules/session.sh`) che intercetta eventuali errori di caricamento dell'interfaccia Gamescope/Steam (errori DRM, assenza rete al primo bootstrap o chiusura anomala precoce) ed effettua il **fallback immediato su Desktop KDE Plasma Wayland** nella stessa sessione senza bisogno di riavviare, mostrando una notifica diagnostica.
+  - Aggiunta dell'utente `steam` ai gruppi `render`, `video`, `seat`, `input` e ai sudoers senza password.
 
 ---
 

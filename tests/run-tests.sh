@@ -409,16 +409,16 @@ EOF
 
     # Verifica ps5-tty-session.sh
     if [ -x "$tty_profile" ] && grep -q "startplasma-wayland" "$tty_profile"; then
-        say_pass "ps5-tty-session.sh configurato per avvio KDE Plasma Wayland"
+        say_pass "ps5-tty-session.sh configurato con supporto KDE Plasma Wayland"
     else
         say_fail "ps5-tty-session.sh mancante o non configurato"
     fi
 
-    # Verifica default session
-    if [ -f "$next_sess" ] && grep -q "desktop" "$next_sess"; then
-        say_pass "Sessione predefinita impostata su desktop (KDE Plasma)"
+    # Verifica default session impostata su gamescope
+    if [ -f "$next_sess" ] && grep -q "gamescope" "$next_sess"; then
+        say_pass "Sessione predefinita impostata su gamescope (Auto-Gamescope Mode)"
     else
-        say_fail "ps5-next-session mancante o non impostato su desktop"
+        say_fail "ps5-next-session mancante o non impostato su gamescope"
     fi
 
     # Verifica patch steamos-session-select (stop portali, unset-environment e protezione loginctl terminate-session)
@@ -471,14 +471,14 @@ test_module_gamescope() {
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
         local missing_features=0
-        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope"; do
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope" "exit 70" "exit 71" "exit 72"; do
             if ! grep -q -- "$feat" "$gs_script"; then
                 say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
                 missing_features=$((missing_features + 1))
             fi
         done
         if [ $missing_features -eq 0 ]; then
-            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, sync D-Bus DISPLAY/WAYLAND_DISPLAY, guard bootstrap Steam e flag resilienti"
+            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, codici errore fallback (70/71/72), sync D-Bus e flag resilienti"
         fi
     else
         say_fail "gamescope-session-ps5 non presente o non eseguibile"
@@ -510,7 +510,115 @@ test_module_gamescope() {
 }
 
 # ------------------------------------------------------------------------------
-# 6. Test Modulo Sistema & Diagnostica
+# 6b. Test Modulo Session (Auto-Gamescope + Fallback automatico su KDE Plasma)
+# ------------------------------------------------------------------------------
+test_module_session() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/session.sh"
+
+    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    local tty_profile="$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
+    local next_sess="$MOCK_ROOT/home/steam/.config/ps5-next-session"
+
+    if [ -x "$tty_profile" ] && [ -f "$next_sess" ] && [ "$(cat "$next_sess" | tr -d '\r\n ')" = "gamescope" ]; then
+        say_pass "Modulo session configura ps5-next-session=gamescope e ps5-tty-session.sh"
+    else
+        say_fail "Modulo session non ha configurato correttamente ps5-next-session o ps5-tty-session.sh"
+    fi
+
+    # 1. Test esecuzione normale di Gamescope (exit 0, durata valida -> NESSUN fallback a KDE)
+    local mock_gs_ok="$SANDBOX_DIR/mock_gs_ok.sh"
+    local mock_kde="$SANDBOX_DIR/mock_kde.sh"
+    local run_trace="$SANDBOX_DIR/session_trace.log"
+    local fallback_log="$SANDBOX_DIR/fallback.log"
+    local alert_file="$SANDBOX_DIR/alert.txt"
+    local switch_marker="$SANDBOX_DIR/switch_marker"
+
+    cat << 'EOF' > "$mock_gs_ok"
+#!/bin/sh
+echo "GAMESCOPE_STARTED" >> "$TRACE_FILE"
+exit 0
+EOF
+    cat << 'EOF' > "$mock_kde"
+#!/bin/sh
+echo "KDE_STARTED" >> "$TRACE_FILE"
+exit 0
+EOF
+    chmod 0755 "$mock_gs_ok" "$mock_kde"
+
+    : > "$run_trace"
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_ok" \
+    PS5_PLASMA_BIN="$mock_kde" \
+    PS5_MIN_UPTIME_SEC=0 \
+    bash "$tty_profile"
+
+    if grep -q "GAMESCOPE_STARTED" "$run_trace" && ! grep -q "KDE_STARTED" "$run_trace"; then
+        say_pass "Avvio automatico Gamescope riuscito senza fallback quando non ci sono errori"
+    else
+        say_fail "Comportamento anomalo durante avvio normale Gamescope: $(tr '\n' ' ' < "$run_trace")"
+    fi
+
+    # 2. Test Fallback automatico su KDE quando Gamescope fallisce il caricamento (exit != 0)
+    local mock_gs_fail="$SANDBOX_DIR/mock_gs_fail.sh"
+    cat << 'EOF' > "$mock_gs_fail"
+#!/bin/sh
+echo "GAMESCOPE_FAILED" >> "$TRACE_FILE"
+exit 71
+EOF
+    chmod 0755 "$mock_gs_fail"
+    : > "$run_trace"
+    rm -f "$alert_file" "$fallback_log"
+
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_fail" \
+    PS5_PLASMA_BIN="$mock_kde" \
+    PS5_MIN_UPTIME_SEC=20 \
+    bash "$tty_profile"
+
+    if grep -q "GAMESCOPE_FAILED" "$run_trace" && \
+       grep -q "KDE_STARTED" "$run_trace" && \
+       [ -f "$alert_file" ] && \
+       grep -q "FALLBACK" "$fallback_log"; then
+        say_pass "Fallback automatico su KDE Plasma attivato in caso di errore di caricamento Gamescope (con alert e log)"
+    else
+        say_fail "Fallback su KDE Plasma NON attivato correttamente dopo errore Gamescope: $(tr '\n' ' ' < "$run_trace")"
+    fi
+
+    # 3. Test Fallback automatico su KDE quando Gamescope crasha entro i primi 20s anche con exit 0
+    : > "$run_trace"
+    rm -f "$alert_file" "$fallback_log"
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_ok" \
+    PS5_PLASMA_BIN="$mock_kde" \
+    PS5_MIN_UPTIME_SEC=20 \
+    bash "$tty_profile"
+
+    if grep -q "GAMESCOPE_STARTED" "$run_trace" && grep -q "KDE_STARTED" "$run_trace"; then
+        say_pass "Fallback automatico su KDE Plasma attivato su chiusura anomala precoce (< 20s)"
+    else
+        say_fail "Fallback su chiusura precoce (< 20s) non attivato"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 7. Test Modulo Sistema & Diagnostica
 # ------------------------------------------------------------------------------
 test_module_system() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -557,7 +665,7 @@ test_module_system() {
 }
 
 # ------------------------------------------------------------------------------
-# 7. Test Modulo Cleanup (Bonifica stato orfano, lock residui e coredump)
+# 8. Test Modulo Cleanup (Bonifica stato orfano, lock residui e coredump)
 # ------------------------------------------------------------------------------
 test_module_cleanup() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -591,7 +699,7 @@ test_module_cleanup() {
 }
 
 # ------------------------------------------------------------------------------
-# 7. Test Idempotenza (Esecuzione multipla senza duplicazioni o errori)
+# 9. Test Idempotenza (Esecuzione multipla senza duplicazioni o errori)
 # ------------------------------------------------------------------------------
 test_idempotency() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -601,6 +709,7 @@ test_idempotency() {
     source "$REPO_DIR/lib/modules/fan.sh"
     source "$REPO_DIR/lib/modules/kde.sh"
     source "$REPO_DIR/lib/modules/gamescope.sh"
+    source "$REPO_DIR/lib/modules/session.sh"
 
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
@@ -608,6 +717,7 @@ test_idempotency() {
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Seconda esecuzione
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
@@ -616,6 +726,7 @@ test_idempotency() {
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_kde_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_session_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Verifica che il file di configurazione moal non abbia duplicati
     local opt_count
@@ -628,7 +739,7 @@ test_idempotency() {
 }
 
 # ------------------------------------------------------------------------------
-# 8. Test CLI Orchestratore (ps5-cachy-os-patch.sh)
+# 10. Test CLI Orchestratore (ps5-cachy-os-patch.sh)
 # ------------------------------------------------------------------------------
 test_cli_orchestration() {
     local main_cli="$REPO_DIR/bin/ps5-cachy-os-patch.sh"
@@ -646,15 +757,15 @@ test_cli_orchestration() {
 
     local list_out
     list_out=$("$main_cli" --list-modules 2>&1 || true)
-    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "ethernet" && echo "$list_out" | grep -q "wifi" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope"; then
-        say_pass "Flag --list-modules elenca i moduli principali"
+    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "ethernet" && echo "$list_out" | grep -q "wifi" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope" && echo "$list_out" | grep -q "session"; then
+        say_pass "Flag --list-modules elenca i moduli principali (incluso session)"
     else
         say_fail "Flag --list-modules incompleto o non funzionante"
     fi
 }
 
 # ------------------------------------------------------------------------------
-# 9. Test Script di Recupero Rapido (fix_ps5_boot.sh)
+# 11. Test Script di Recupero Rapido (fix_ps5_boot.sh)
 # ------------------------------------------------------------------------------
 test_fix_ps5_boot() {
     local fix_cli="$REPO_DIR/bin/fix_ps5_boot.sh"
@@ -672,7 +783,7 @@ test_fix_ps5_boot() {
 }
 
 # ------------------------------------------------------------------------------
-# 10. Test Orchestratore Completo End-to-End
+# 12. Test Orchestratore Completo End-to-End
 # ------------------------------------------------------------------------------
 test_master_patch_full() {
     local main_cli="$REPO_DIR/bin/ps5-cachy-os-patch.sh"
@@ -716,6 +827,7 @@ run_test test_module_wifi
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope
+run_test test_module_session
 run_test test_module_system
 run_test test_idempotency
 run_test test_cli_orchestration

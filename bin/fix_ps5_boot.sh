@@ -20,6 +20,7 @@ source "$REPO_DIR/lib/modules/wifi.sh"
 source "$REPO_DIR/lib/modules/fan.sh"
 source "$REPO_DIR/lib/modules/kde.sh"
 source "$REPO_DIR/lib/modules/gamescope.sh"
+source "$REPO_DIR/lib/modules/session.sh"
 source "$REPO_DIR/lib/modules/system.sh"
 
 check_root
@@ -56,12 +57,15 @@ module_fan_run "$CACHY_MNT" "$BOOT_MNT"
 # 7. Modulo Desktop KDE Plasma 6 Wayland
 module_kde_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 8. Modulo Gamescope Gaming Mode (1080p60 DRM + cap_sys_nice)
+# 8. Modulo Gamescope Gaming Mode (Auto-DRM + cap_sys_nice)
 module_gamescope_run "$CACHY_MNT" "$BOOT_MNT"
 
-# 6. Sincronizzazione filesystem
+# 9. Modulo Sessione (Auto-avvio Gamescope con Fallback KDE Plasma)
+module_session_run "$CACHY_MNT" "$BOOT_MNT"
+
+# 10. Sincronizzazione filesystem
 log_step "Sincronizzazione finale dati su disco..."
 sync
 log_success "Tutte le correzioni di ripristino sono state applicate con successo!"
 echo -e "\n${GREEN}Ora puoi smontare la chiavetta USB e avviare la PS5.${NC}"
-echo -e "${YELLOW}La PS5 avvierà direttamente il desktop KDE Plasma con ventola silenziosa e segnale HDMI attivo.${NC}\n"
+echo -e "${YELLOW}La PS5 avvierà automaticamente Gamescope Mode (con fallback intelligente su KDE Plasma) e ventola silenziosa.${NC}\n"

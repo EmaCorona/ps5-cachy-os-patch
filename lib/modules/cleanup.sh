@@ -33,9 +33,9 @@ module_cleanup_run() {
         fi
     done
 
-    # 2. Reset di sicurezza dello stato sessione su desktop
+    # 2. Imposta lo stato sessione predefinito su Gamescope Mode (con fallback KDE)
     sudo mkdir -p "${cachy_mnt}/home/steam/.config"
-    echo "desktop" | sudo tee "${cachy_mnt}/home/steam/.config/ps5-next-session" >/dev/null
+    echo "gamescope" | sudo tee "${cachy_mnt}/home/steam/.config/ps5-next-session" >/dev/null
     sudo chown -R 1000:1000 "${cachy_mnt}/home/steam/.config" 2>/dev/null || true
     sudo chmod 0644 "${cachy_mnt}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 
@@ -54,21 +54,19 @@ module_cleanup_run() {
 # ps5-boot-cleanup: Early boot state sanitizer for PS5
 # Executed automatically by systemd before user sessions start
 
-# Remove stale Steam pid/pipes from unexpected shutdowns
+# Remove stale Steam pid/pipes and session switch markers from unexpected shutdowns
 rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe 2>/dev/null || true
 rm -f /home/steam/.local/share/Steam/*.pid /home/steam/.local/share/Steam/*.pipe 2>/dev/null || true
-rm -f /tmp/.X*-lock /tmp/.x11-unix/X* 2>/dev/null || true
+rm -f /tmp/.X*-lock /tmp/.x11-unix/X* /tmp/ps5-user-session-switch 2>/dev/null || true
 
 # Purge any dangling coredump files
 rm -f /var/lib/systemd/coredump/* 2>/dev/null || true
 rm -rf /home/steam/.cache/drkonqi/crashes/* 2>/dev/null || true
 
-# Ensure safe fallback session
-if [ ! -s /home/steam/.config/ps5-next-session ]; then
-    mkdir -p /home/steam/.config
-    echo "desktop" > /home/steam/.config/ps5-next-session
-    chown -R 1000:1000 /home/steam/.config 2>/dev/null || true
-fi
+# Ensure automatic boot into Gamescope Mode (with runtime fallback to KDE Plasma on failure)
+mkdir -p /home/steam/.config
+echo "gamescope" > /home/steam/.config/ps5-next-session
+chown -R 1000:1000 /home/steam/.config 2>/dev/null || true
 
 exit 0
 EOF
