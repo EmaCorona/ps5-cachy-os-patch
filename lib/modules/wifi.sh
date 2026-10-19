@@ -156,12 +156,29 @@ fi
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-stage-firmware"
 
-    # Assicura che ps5-stage-firmware.service sia abilitato
-    if [ -f "${cachy_mnt}/etc/systemd/system/ps5-stage-firmware.service" ]; then
-        sudo mkdir -p "${cachy_mnt}/etc/systemd/system/sysinit.target.wants"
-        sudo ln -sf "/etc/systemd/system/ps5-stage-firmware.service" \
-            "${cachy_mnt}/etc/systemd/system/sysinit.target.wants/ps5-stage-firmware.service" 2>/dev/null || true
-    fi
+    # Unit ps5-stage-firmware.service generata in modo deterministico (anche su immagini pulite)
+    sudo mkdir -p "${cachy_mnt}/etc/systemd/system/multi-user.target.wants"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/systemd/system/ps5-stage-firmware.service" >/dev/null
+[Unit]
+Description=Stage PS5 wifi firmware and load modules
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target NetworkManager.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ps5-stage-firmware
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo chmod 0644 "${cachy_mnt}/etc/systemd/system/ps5-stage-firmware.service"
+    # Un solo symlink coerente con [Install] (rimuove il duplicato storico in sysinit.target.wants)
+    sudo rm -f "${cachy_mnt}/etc/systemd/system/sysinit.target.wants/ps5-stage-firmware.service" 2>/dev/null || true
+    sudo ln -sf "/etc/systemd/system/ps5-stage-firmware.service" \
+        "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/ps5-stage-firmware.service"
 
     # 7. Aggiorna dipendenze moduli
     if command -v depmod >/dev/null 2>&1 || [ -x "${STUBS_DIR:-}/depmod" ]; then

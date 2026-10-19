@@ -127,6 +127,7 @@ fi
 # Controllo integrità filesystem se non saltato
 if [ "$SKIP_FSCK" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     disk_check_integrity "${ROOT_DEV:-}" "$CACHY_MNT"
+    disk_check_boot_fat "${BOOT_DEV:-}" "$BOOT_MNT" "${ROOT_DEV:-}"
 fi
 
 # Esecuzione in modalità dry-run

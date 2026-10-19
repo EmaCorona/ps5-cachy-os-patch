@@ -63,5 +63,15 @@ detect_mounts() {
             ROOT_DEV="/dev/sda1"
         fi
     fi
+
+    # Rilevamento dispositivo a blocchi boot (FAT32, contiene bzImage)
+    BOOT_DEV=""
+    if [ -z "${MOCK_BOOT:-}" ] && [ -n "$BOOT_MNT" ]; then
+        BOOT_DEV=$(findmnt -n -o SOURCE --target "$BOOT_MNT" 2>/dev/null | head -n 1 || true)
+        if [ -z "$BOOT_DEV" ] || [ ! -b "$BOOT_DEV" ]; then
+            BOOT_DEV=$(blkid -L boot 2>/dev/null || true)
+        fi
+        [ -n "$BOOT_DEV" ] && [ -b "$BOOT_DEV" ] || BOOT_DEV=""
+    fi
     return 0
 }

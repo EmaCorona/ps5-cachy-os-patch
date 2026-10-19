@@ -37,6 +37,7 @@ fi
 
 # 1. Controllo integrità filesystem
 disk_check_integrity "${ROOT_DEV:-}" "$CACHY_MNT"
+disk_check_boot_fat "${BOOT_DEV:-}" "$BOOT_MNT" "${ROOT_DEV:-}"
 
 # 2. Bonifica stato, lock orfani e coredump
 module_cleanup_run "$CACHY_MNT" "$BOOT_MNT"

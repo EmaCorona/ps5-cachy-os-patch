@@ -67,7 +67,18 @@ _start_kde_plasma() {
     unset WAYLAND_DISPLAY DISPLAY 2>/dev/null || true
     export XDG_SESSION_TYPE=wayland
     export XDG_CURRENT_DESKTOP=KDE
+    export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
+
+    # Allinea l'ambiente di attivazione systemd/D-Bus a KDE e ferma eventuali portali
+    # residui della sessione Gamescope, così xdg-desktop-portal riparte con kde-portals.conf
+    if [ "${PS5_FORCE_TTY1:-0}" != "1" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop xdg-desktop-portal.service xdg-desktop-portal-gtk.service 2>/dev/null || true
+        systemctl --user import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true
+        if command -v dbus-update-activation-environment >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS-}" ]; then
+            dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true
+        fi
+    fi
 
     PLASMA_DBUS_WRAP=""
     if [ "${PS5_FORCE_TTY1:-0}" != "1" ] && [ -x /usr/lib/plasma-dbus-run-session-if-needed ]; then

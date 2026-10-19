@@ -50,7 +50,7 @@ setup_sandbox() {
     echo "cmdline initial" > "$MOCK_BOOT/cmdline.txt"
     echo "0x80000000" > "$MOCK_BOOT/vram.txt"
     echo -e "[Journal]\nStorage=auto" > "$MOCK_ROOT/etc/systemd/journald.conf"
-    echo "LABEL=cachyos / ext4 defaults 0 1" > "$MOCK_ROOT/etc/fstab"
+    printf "LABEL=cachyos / ext4 defaults 0 1\nLABEL=boot /boot/efi vfat defaults 0 1\n" > "$MOCK_ROOT/etc/fstab"
 
     # File orfani per test di pulizia stato
     mkdir -p "$MOCK_ROOT/home/steam/.steam" "$MOCK_ROOT/var/lib/systemd/coredump" "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes"
@@ -309,6 +309,27 @@ EOS')
     fi
 }
 
+test_module_wifi_stage_unit() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/wifi.sh"
+
+    # Simula il doppio symlink storico presente sulla chiavetta
+    mkdir -p "$MOCK_ROOT/etc/systemd/system/sysinit.target.wants"
+    ln -sf /etc/systemd/system/ps5-stage-firmware.service \
+        "$MOCK_ROOT/etc/systemd/system/sysinit.target.wants/ps5-stage-firmware.service"
+
+    module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+
+    local unit="$MOCK_ROOT/etc/systemd/system/ps5-stage-firmware.service"
+    if [ -f "$unit" ] && grep -q "Before=network-pre.target NetworkManager.service" "$unit" && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-stage-firmware.service" ] && \
+       [ ! -L "$MOCK_ROOT/etc/systemd/system/sysinit.target.wants/ps5-stage-firmware.service" ]; then
+        say_pass "ps5-stage-firmware.service generato su immagine pulita, symlink unico in multi-user.target.wants"
+    else
+        say_fail "ps5-stage-firmware.service mancante o symlink duplicato"
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # 4. Test Modulo Ventole (Curva Continua 12 Zone / 1°C, Deadband 2°C e Slew-Rate)
 # ------------------------------------------------------------------------------
@@ -558,6 +579,14 @@ test_module_session() {
         say_fail "Modulo session non ha configurato correttamente ps5-next-session o ps5-tty-session.sh"
     fi
 
+    if grep -q "import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP" "$tty_profile" && \
+       grep -q "dbus-update-activation-environment --systemd" "$tty_profile" && \
+       grep -q "systemctl --user stop xdg-desktop-portal.service xdg-desktop-portal-gtk.service" "$tty_profile"; then
+        say_pass "_start_kde_plasma sincronizza XDG_CURRENT_DESKTOP=KDE su systemd/D-Bus e resetta i portali Gamescope"
+    else
+        say_fail "_start_kde_plasma non sincronizza l'ambiente di attivazione KDE"
+    fi
+
     # 1. Test esecuzione normale di Gamescope (exit 0, durata valida -> NESSUN fallback a KDE)
     local mock_gs_ok="$SANDBOX_DIR/mock_gs_ok.sh"
     local mock_kde="$SANDBOX_DIR/mock_kde.sh"
@@ -692,6 +721,68 @@ test_module_system() {
         say_pass "cmdline.txt configurato con fsck.mode=auto fsck.repair=yes"
     else
         say_fail "cmdline.txt privo di parametri auto-riparazione fsck"
+    fi
+
+    # Verifica flush su /boot/efi vfat (idempotente)
+    module_system_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    if grep -qE "^LABEL=boot /boot/efi vfat defaults,noatime,flush,errors=remount-ro 0 1$" "$MOCK_ROOT/etc/fstab" && \
+       [ "$(grep -o "flush" "$MOCK_ROOT/etc/fstab" | wc -l)" -eq 1 ]; then
+        say_pass "fstab: /boot/efi vfat montato con flush,errors=remount-ro (idempotente)"
+    else
+        say_fail "fstab: opzione flush mancante o duplicata su /boot/efi"
+    fi
+}
+
+test_module_system_diag() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/system.sh"
+
+    # Simula residui legacy della vecchia immagine
+    mkdir -p "$MOCK_ROOT/etc/systemd/system/basic.target.wants"
+    echo "[Unit]" > "$MOCK_ROOT/etc/systemd/system/ps5-boot-diag.service"
+    ln -sf /etc/systemd/system/ps5-boot-diag.service "$MOCK_ROOT/etc/systemd/system/basic.target.wants/ps5-boot-diag.service"
+    for f in dmesg_boot.txt journal_boot.txt ps_boot.txt drm_status.txt cmdline_boot.txt failed_services.txt; do
+        echo x > "$MOCK_BOOT/$f"
+    done
+    echo "keep" > "$MOCK_BOOT/vram.txt"
+
+    module_system_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+
+    if [ ! -e "$MOCK_ROOT/etc/systemd/system/ps5-boot-diag.service" ] && \
+       [ ! -L "$MOCK_ROOT/etc/systemd/system/basic.target.wants/ps5-boot-diag.service" ] && \
+       [ ! -e "$MOCK_BOOT/dmesg_boot.txt" ] && [ ! -e "$MOCK_BOOT/failed_services.txt" ] && \
+       [ -f "$MOCK_BOOT/vram.txt" ]; then
+        say_pass "Servizio legacy ps5-boot-diag e file sparsi in /boot/efi rimossi (vram.txt preservato)"
+    else
+        say_fail "Residui diagnostici legacy ancora presenti o file utili rimossi"
+    fi
+
+    local snap="$MOCK_ROOT/usr/local/sbin/ps5-diag-snapshot"
+    if [ -x "$snap" ] && bash -n "$snap" && \
+       grep -q "ExecStart=/usr/local/sbin/ps5-diag-snapshot early" "$MOCK_ROOT/etc/systemd/system/ps5-diag-dump.service" && \
+       grep -q "OnBootSec=100s" "$MOCK_ROOT/etc/systemd/system/ps5-diag-snapshot.timer" && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/timers.target.wants/ps5-diag-snapshot.timer" ]; then
+        say_pass "Diagnostica consolidata: snapshot early (sysinit) + full post-sessione (+100s)"
+    else
+        say_fail "Diagnostica consolidata ps5-diag-snapshot non configurata correttamente"
+    fi
+}
+
+test_module_bluetooth() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/bluetooth.sh"
+
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+
+    local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
+    local svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    if [ -x "$quiet" ] && sh -n "$quiet" && grep -q "btmgmt --index" "$quiet" && \
+       ! grep -q '/address' "$quiet" && \
+       grep -q "After=bluetooth.service ps5-bluetooth-firmware.service" "$svc" && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ]; then
+        say_pass "ps5-bt-quiet installato (lettura indirizzo via btmgmt/hciconfig, ordinato dopo il firmware)"
+    else
+        say_fail "ps5-bt-quiet mancante, non ordinato o basato su sysfs address inesistente"
     fi
 }
 
@@ -855,11 +946,14 @@ run_test test_module_cleanup
 run_test test_module_vram
 run_test test_module_ethernet
 run_test test_module_wifi
+run_test test_module_wifi_stage_unit
+run_test test_module_bluetooth
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope
 run_test test_module_session
 run_test test_module_system
+run_test test_module_system_diag
 run_test test_idempotency
 run_test test_cli_orchestration
 run_test test_fix_ps5_boot
