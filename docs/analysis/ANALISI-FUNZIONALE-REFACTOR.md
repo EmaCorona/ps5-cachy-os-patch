@@ -3,7 +3,7 @@
 ### Repository: ps5-cachy-os-patch (Ispirato a steam-link-display-adapter)
 
 > **Data:** Ottobre 2026  
-> **Stato del documento:** Approvato per implementazione  
+> **Stato del documento:** Implementato e Convalidato  
 > **Branch di riferimento:** `feature/modular-refactor`  
 > **Riferimento architetturale:** [EmaCorona/steam-link-display-adapter](https://github.com/EmaCorona/steam-link-display-adapter)
 
@@ -11,69 +11,79 @@
 
 # 1. OBIETTIVI E MOTIVAZIONI
 
-Lo script originale `ps5-cachy-os-patch.sh` (oltre 500 righe monolitiche) e lo script di ripristino `fix_ps5_boot.sh` hanno risolto con successo diverse problematiche critiche sull'APU Oberon di PS5 (kernel panic mt7921e, ventole rumorose, deadlock di rete, crash di Gamescope).
+Lo script originale `ps5-cachy-os-patch.sh` e lo script di ripristino `fix_ps5_boot.sh` hanno risolto con successo diverse problematiche critiche sull'APU Oberon di PS5 (kernel panic mt7921e, ventole rumorose, deadlock di rete, crash di Gamescope).
 
-Tuttavia, la struttura monolitica presenta evidenti limiti:
-1. **Rischio di regressioni:** Qualsiasi modifica a una sezione (es. ventole o rete) rischia di alterare variabili globali o stati di altre sezioni.
-2. **Difficoltà di test:** È impossibile testare singole funzionalità (es. solo VRAM o solo Gamescope) senza rieseguire l'intero processo su una chiavetta reale.
-3. **Mancanza di riusabilità:** `fix_ps5_boot.sh` duplica parte della logica di `ps5-cachy-os-patch.sh` (es. rimozione mt7921e, configurazione VRAM, fsck), portando a divergenze nel codice.
+Tuttavia, la struttura monolitica presentava evidenti limiti:
+1. **Rischio di regressioni:** Qualsiasi modifica a una sezione (es. ventole o rete) rischiava di alterare variabili globali o stati di altre sezioni.
+2. **Difficoltà di test:** Era impossibile testare singole funzionalità (es. solo VRAM o solo Gamescope) senza rieseguire l'intero processo su una chiavetta reale.
+3. **Mancanza di riusabilità:** `fix_ps5_boot.sh` duplicava parte della logica di `ps5-cachy-os-patch.sh`, portando a divergenze nel codice.
 
 ### Obiettivo del Refactoring
-Riorganizzare il repository secondo il pattern modulare adottato con successo in `steam-link-display-adapter`:
+Riorganizzare il repository secondo un pattern rigorosamente modulare:
 - Un **entrypoint principale** (`bin/ps5-cachy-os-patch.sh`) per il patching completo o selettivo (`--module <nome>`).
 - Un **entrypoint di soccorso veloce** (`bin/fix_ps5_boot.sh`) che invoca solo i moduli essenziali senza duplicare codice.
 - Una libreria condivisa in `lib/`:
-  - `lib/core/`: funzioni trasversali (logging standardizzato, rilevamento ambiente/mount point, controllo integrità disco, backup).
-  - `lib/modules/`: moduli specializzati isolati e indipendenti per ciascun sottosistema (VRAM, ventole, rete, display/sessione, sistema, first-boot, bluetooth).
-- Una **suite di test estesa hardware-free** (`tests/run-tests.sh`) che simula l'ambiente tramite filesystem mock e stub, verificando la correttezza prima dell'applicazione su hardware reale.
+  - `lib/core/`: funzioni trasversali (logging unificato, rilevamento ambiente/mount point, controllo integrità filesystem ext4 e FAT32 con correzione dirty bit, backup preventivo).
+  - `lib/modules/`: moduli specializzati isolati e indipendenti per ciascun sottosistema (`cleanup`, `vram`, `firstboot`, `bluetooth`, `ethernet`, `wifi`, `fan`, `kde`, `gamescope`, `session`, `system`).
+- Una **suite di test estesa hardware-free** (`tests/run-all-tests.sh` e `tests/run-tests.sh`) che simula l'ambiente tramite filesystem mock e stub, verificando la correttezza prima dell'applicazione su hardware reale.
 
 ---
 
-# 2. ARCHITETTURA MODULARE PROPOSTA
+# 2. ARCHITETTURA MODULARE DEL REPOSITORY
 
-La nuova struttura del repository è così articolata:
+La struttura del repository è così articolata:
 
 ```text
 ps5-cachy-os-patch/
 ├── bin/
-│   ├── ps5-cachy-os-patch.sh      # Orchestratore principale CLI
-│   └── fix_ps5_boot.sh            # Script di recupero rapido
+│   ├── ps5-cachy-os-patch.sh      # Orchestratore principale CLI (supporta --module, --dry-run, --skip-fsck)
+│   └── fix_ps5_boot.sh            # Script di recupero rapido ed emergenza
 ├── lib/
 │   ├── core/
-│   │   ├── common.sh              # Logging unificato, colori, gestione errori
-│   │   ├── env.sh                 # Rilevamento mount rootfs/boot, root device
-│   │   ├── disk.sh                # Controllo fsck ext4 e stabilizzazione udev
-│   │   └── backup.sh              # Backup preventivo file critici
+│   │   ├── common.sh              # Logging unificato, colori, gestione errori, verifica root
+│   │   ├── env.sh                 # Rilevamento mount rootfs/boot, root device (ROOT_DEV) e boot device (BOOT_DEV)
+│   │   ├── disk.sh                # Controllo fsck ext4 e fsck.fat per rimozione dirty bit FAT32
+│   │   └── backup.sh              # Backup preventivo file critici prima della modifica
 │   └── modules/
-│       ├── vram.sh                # Configurazione VRAM 4 GB (vram.txt)
-│       ├── firstboot.sh           # Bypass wizard first-boot dialog
-│       ├── bluetooth.sh           # Driver e servizio BT PS5
-│       ├── network.sh             # NXP IW620, rimozione mt7921e, fix deadlock systemd
-│       ├── fan.sh                 # Daemon ventola con profilo silent-gaming
-│       ├── session.sh             # KDE Plasma 6 + Gamescope 1080p60 DRM + cap_sys_nice
-│       └── system.sh              # Sudoers wheel, machine-id, journal persistence, diag dump
+│       ├── cleanup.sh             # Bonifica lock/pipe orfani di Steam, coredump e installazione ps5-boot-cleanup
+│       ├── vram.sh                # Configurazione VRAM 4 GB (vram.txt) per APU Oberon
+│       ├── firstboot.sh           # Bypass wizard first-boot dialog per evitare blocco su schermata blu
+│       ├── bluetooth.sh           # Driver BT PS5, firmware loader e ps5-bt-quiet per spegnimento controller fantasma
+│       ├── ethernet.sh            # Ottimizzazione Realtek/Salina GBE (offload off), sync orologio TLS/HTTP, ps5-net-diag
+│       ├── wifi.sh                # Driver NXP IW620 (moal), blacklist mt7921e instabile, staging firmware e regulatory.db
+│       ├── fan.sh                 # Controller continuo 12 zone (1°C), deadband 2°C, anti-heat-soak e utility ps5-temp
+│       ├── kde.sh                 # KDE Plasma 6 Wayland, steamos-session-select bidirezionale e alert utente
+│       ├── gamescope.sh           # Gamescope Gaming Mode, rilevamento DRM dinamico 4K/1080p, gestione DHCP e cap_sys_nice
+│       ├── session.sh             # Supervisore tty1 con avvio Gamescope e fallback immediato a KDE Plasma senza riavvio
+│       └── system.sh              # Sudoers wheel, machine-id, journal persistence, fstab flush e snapshot ps5-diag
 ├── docs/
 │   └── analysis/
 │       └── ANALISI-FUNZIONALE-REFACTOR.md
-└── tests/
-    ├── run-tests.sh               # Suite di test automatizzata hardware-free
-    ├── run-all-tests.sh           # Master test runner
-    ├── stubs/                     # Binari stub per isolamento (udevadm, depmod, setcap, etc.)
-    └── unit/                      # Test unitari per core e singoli moduli
+├── tests/
+│   ├── run-tests.sh               # Suite di test estesa (56 asserzioni automatizzate)
+│   ├── run-all-tests.sh           # Master test runner con output colorato e riepilogo
+│   └── stubs/                     # Binari stub per isolamento (udevadm, depmod, setcap, ecc.)
+├── fix_ps5_boot.sh                # Wrapper di compatibilità nella root del repository
+├── ps5-cachy-os-patch.sh          # Wrapper di compatibilità nella root del repository
+└── README.md                      # Documentazione completa utente e sviluppatore
 ```
 
 ### Retrocompatibilità
-Per preservare la retrocompatibilità totale con i comandi già in uso dall'utente (`sudo ./fix_ps5_boot.sh` o `sudo ./ps5-cachy-os-patch.sh` eseguiti dalla root del repo o da `~/Downloads`), i file alla radice del repository rimarranno disponibili come wrapper trasparenti che localizzano `lib/` e avviano l'orchestratore.
+I file alla radice del repository (`fix_ps5_boot.sh` e `ps5-cachy-os-patch.sh`) fungono da wrapper trasparenti verso la directory `bin/`, garantendo piena compatibilità con comandi e script esistenti.
 
 ---
 
 # 3. INTERFACCIA E CONTRATTO DEI MODULI
 
-Ciascun modulo in `lib/modules/<nome>.sh` deve rispettare una convenzione standardizzata:
+Ciascun modulo in `lib/modules/<nome>.sh` rispetta una convenzione standardizzata:
 
 ```bash
 #!/usr/bin/env bash
 # lib/modules/<nome>.sh - Descrizione funzionalità
+
+module_<nome>_info() {
+    echo "Descrizione sintetica del modulo per la CLI"
+}
 
 module_<nome>_run() {
     local cachy_mnt="$1"
@@ -87,51 +97,35 @@ module_<nome>_run() {
 module_<nome>_check() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
-    # Verifica dello stato attuale (per diagnosi o dry-run)
+    # Verifica dello stato attuale (utilizzato da --dry-run o diagnosi)
 }
 ```
 
 ### Parametri CLI supportati dall'Orchestratore (`ps5-cachy-os-patch.sh`):
 - `(nessun parametro)` o `--all`: Esegue l'intera pipeline di patch.
-- `--module <nome>`: Esegue esclusivamente il modulo specificato (es. `--module fan`, `--module session`).
-- `--list-modules`: Elenca tutti i moduli disponibili con relativa descrizione.
+- `--module <nome>`, `-m <nome>`: Esegue esclusivamente il modulo specificato (es. `--module fan`, `--module session`).
+- `--list-modules`, `-l`: Elenca tutti gli 11 moduli disponibili con relativa descrizione.
 - `--dry-run`: Esegue il rilevamento e la verifica dei moduli senza apportare scritture su disco.
-- `--help`: Mostra la guida all'uso.
+- `--skip-fsck`: Salta il controllo di integrità filesystem ext4 e FAT32.
+- `--help`, `-h`: Mostra la guida all'uso.
 
 ---
 
-# 4. PIANO DELLA SUITE DI TEST (PREVENZIONE REGRESSIONI)
+# 4. SUITE DI TEST AUTOMATIZZATA (HARDWARE-FREE)
 
-La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`mktemp -d`), senza richiedere privilegi di root e senza toccare dischi reali.
+La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`mktemp -d`), senza richiedere privilegi di root e senza toccare dischi reali, con stub dedicati per comandi hardware (`udevadm`, `depmod`, `setcap`, `systemctl`, `loginctl`, `dbus-uuidgen`).
 
-### Casi di Test Definiti:
-1. **Test Sintattico (`bash -n`):**
-   - Tutti gli script in `bin/`, `lib/core/` e `lib/modules/` devono passare il linter sintattico di Bash senza errori.
-2. **Test Isolamento Ambiente (`lib/core/env.sh`):**
-   - Rilevamento corretto di `CACHY_MNT` e `BOOT_MNT` da directory mock.
-   - Gestione corretta di mount point non trovati o multipli.
-3. **Test Modulo VRAM (`lib/modules/vram.sh`):**
-   - Creazione di `vram.txt` con valore esatto `0x100000000` (4 GB).
-   - Idempotenza: esecuzioni successive non alterano il file né generano errori.
-4. **Test Modulo Rete e Wi-Fi (`lib/modules/network.sh`):**
-   - Verifica rimozione di `mt7921e.ko` e configurazioni correlate.
-   - Verifica generazione di `ps5-wifi.conf` contenente solo `mlan` e `moal`.
-   - Verifica override `systemd-networkd-wait-online` contro i deadlock.
-5. **Test Modulo Ventole (`lib/modules/fan.sh`):**
-   - Installazione di `ps5-fan-daemon` in `/usr/local/bin` con permessi `0755`.
-   - Creazione della unit systemd `ps5-fan-daemon.service` e symlink in `multi-user.target.wants`.
-6. **Test Modulo Sessione & Gamescope (`lib/modules/session.sh`):**
-   - Configurazione di `gamescope-session-ps5` con risoluzione esplicita `-W 1920 -H 1080 -w 1920 -h 1080 -r 60`.
-   - Presenza dei flag essenziali: `--backend drm`, `--prefer-output DP-1`, `--force-grab-cursor`.
-   - Presenza del delay `sleep 1` per rilascio DRM master e reindirizzamento log in `/home/steam/.gamescope.log`.
-   - Chiamata a `setcap` per assegnare `cap_sys_nice=eip`.
-   - Reset sicuro della sessione desktop in `ps5-tty-session.sh`.
-7. **Test Modulo Sistema (`lib/modules/system.sh`):**
-   - Configurazione sudoers senza password per `%wheel` con permessi `0440`.
-   - Configurazione journald persistente.
-8. **Test Orchestratore e CLI (`bin/ps5-cachy-os-patch.sh`):**
-   - Funzionamento corretto di `--help` e `--list-modules`.
-   - Esecuzione mirata di singolo modulo tramite `--module <nome>`.
-   - Esecuzione completa end-to-end su mock filesystem con verifica di tutti i file generati.
-9. **Test Script di Recupero Rapido (`bin/fix_ps5_boot.sh`):**
-   - Verifica che invochi correttamente solo i moduli essenziali (fsck, wifi, vram, fan, session) con esito 0.
+### Aree di Test Coperte (56 Asserzioni Totali):
+1. **Controllo Sintattico (`bash -n` / `sh -n`):** Tutti gli script sorgente e tutti gli script generati a runtime (`ps5-fan-daemon`, `ps5-temp`, `ps5-stage-firmware`, `ps5-network-status`, `ps5-net-diag`, `ps5-bt-quiet`, `ps5-diag-snapshot`, `ps5-boot-cleanup`, `gamescope-session-ps5`, `ps5-tty-session.sh`).
+2. **Modulo Cleanup:** Rimozione corretta file orfani `steam.pid` e `steam.pipe`, eliminazione coredump accumulati, installazione unit `ps5-boot-cleanup.service`.
+3. **Modulo VRAM:** Creazione di `vram.txt` con valore esatto `0x100000000` (4 GB) e verifica di idempotenza.
+4. **Modulo Ethernet:** Override anti-deadlock `systemd-networkd`, profilo NetworkManager con offload hardware disabilitati e IPv6 disabilitato, collector diagnostico `ps5-net-diag`, sincronizzazione data HTTP/TLS contro la perdita dell'RTC, precedenza IPv4 in `gai.conf`.
+5. **Modulo Wi-Fi:** Installazione ermetica `regulatory.db`, firmware NXP IW620, blacklist PCIe `mt7921e`, abilitazione wireless NetworkManager, script `ps5-stage-firmware` basato su sysfs senza dipendenza da `lspci`, generazione deterministica unit `ps5-stage-firmware.service` con symlink unico in `multi-user.target.wants`.
+6. **Modulo Bluetooth:** Installazione servizio firmware, installazione di `ps5-bt-quiet` con query via `btmgmt`/`hciconfig` (superando l'assenza di sysfs `address` sui kernel moderni) e disattivazione del controller fantasma `00:00:00:00:00:00`.
+7. **Modulo Fan:** Installazione `ps5-fan-daemon` e `ps5-temp`, baseline 58°C in udev, curva continua a 12 zone (38 micro-livelli da 65°C a 28°C con interpolazione al singolo grado 1°C), deadband asimmetrica 2°C, slew-rate limiter anti-heat-soak.
+8. **Modulo KDE:** Configurazione Plasma 6 Wayland, aggiornamento sicuro di `steamos-session-select` (gestione target systemd, chiusura pulita KWin/plasmashell, guardia contro sessioni inesistenti).
+9. **Modulo Gamescope:** Configurazione template `/etc/ps5-gamescope.conf`, portali XDG, script wrapper `gamescope-session-ps5` con parsing dinamico delle risoluzioni DRM (4K/1440p/1080p), rilevamento manifest Steam Deck e gestione grace period connettività DHCP.
+10. **Modulo Session:** Avvio predefinito in Gamescope Mode, monitoraggio processo tty1, fallback automatico a KDE Plasma su errore o crash precoce (< 20s), sincronizzazione ambiente D-Bus (`XDG_CURRENT_DESKTOP=KDE`) e rimozione conflitti portali.
+11. **Modulo System & Diagnostica:** Sudoers wheel senza password, journal persistente, soppressione coredump pesanti, ottimizzazione fstab con flag `flush` per FAT32 boot, aggiunta parametri auto-riparazione `fsck.mode=auto fsck.repair=yes` in `cmdline.txt`, rimozione servizio legacy `ps5-boot-diag` e consolidamento snapshot in `/boot/efi/ps5-diag/`.
+12. **Idempotenza:** Applicazione ripetuta dell'intera pipeline senza duplicazioni di righe o impostazioni corrotte.
+13. **CLI Orchestration & Script di Emergenza:** Verifica di `--help`, `--list-modules`, esecuzione isolata `--module <nome>`, esecuzione end-to-end master patch e `fix_ps5_boot.sh`.
