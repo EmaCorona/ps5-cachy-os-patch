@@ -121,24 +121,72 @@ FINAL_CONN="${PS5_OUTPUT_CONN:-${DETECTED_CONN:-DP-1,HDMI-A-1}}"
 
 echo "[$(date -Is)] PS5 Gamescope Init: Connettore=${FINAL_CONN} (rilevato: ${DETECTED_CONN:-none}), Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}, Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}, Refresh=${PS5_REFRESH_RATE:-Auto}" >> "$LOG_FILE"
 
-# 3. Controllo stato di Bootstrap e Rete per Steam
-STEAM_INSTALLED_FLAG="/home/steam/.local/share/Steam/package/steam_client_ubuntu12.installed"
-SESSION_FILE="/home/steam/.config/ps5-next-session"
+# 3. Controllo stato di Bootstrap di Steam e sincronizzazione DHCP di Rete
+STEAM_DIR="${PS5_STEAM_DIR:-/home/steam/.local/share/Steam}"
+STEAM_INSTALLED_FLAG="${STEAM_DIR}/package/steam_client_ubuntu12.installed"
+
+is_steam_installed() {
+    if [ -s "${STEAM_DIR}/ubuntu12_32/steam" ] || [ -s "$STEAM_INSTALLED_FLAG" ]; then
+        return 0
+    fi
+    local inst_file
+    for inst_file in "${STEAM_DIR}"/package/steam_client*.installed; do
+        if [ -s "$inst_file" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 check_network() {
+    if [ -n "${PS5_NET_CHECK_CMD:-}" ]; then
+        eval "$PS5_NET_CHECK_CMD"
+        return $?
+    fi
     if ip route get 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; then
         return 0
     fi
     return 1
 }
 
-if [ ! -f "$STEAM_INSTALLED_FLAG" ]; then
-    echo "[$(date -Is)] PS5 Gamescope: Steam runtime package non ancora inizializzato (primo bootstrap richiesto)." >> "$LOG_FILE"
-    if ! check_network; then
-        echo "[$(date -Is)] PS5 Gamescope ERRORE: Connessione di rete assente al primo avvio di Steam." >> "$LOG_FILE"
-        echo "[$(date -Is)] Attivazione fallback automatico a KDE Plasma Desktop per consentire la configurazione della rete." >> "$LOG_FILE"
-        mkdir -p "$(dirname "$SESSION_FILE")"
-        echo "desktop" > "$SESSION_FILE" 2>/dev/null || true
+has_active_carrier() {
+    local c
+    for c in /sys/class/net/en*/carrier /sys/class/net/eth*/carrier /sys/class/net/wl*/carrier; do
+        if [ -r "$c" ] && [ "$(cat "$c" 2>/dev/null)" = "1" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+wait_for_network() {
+    local max_wait="${1:-15}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$max_wait" ]; do
+        if check_network; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    check_network
+}
+
+STEAM_ARGS=(-gamepadui -steamos)
+
+if is_steam_installed; then
+    STEAM_ARGS+=(-noverifyfiles)
+    # Se il cavo Ethernet ha carrier attivo ma il DHCP sta ancora completando (~3-5s dal boot),
+    # attendi fino a 6s così Steam parte già online senza falsi avvii offline.
+    if ! check_network && has_active_carrier; then
+        echo "[$(date -Is)] PS5 Gamescope: Carrier di rete rilevato, attesa completamento DHCP (max 6s)..." >> "$LOG_FILE"
+        wait_for_network 6 || true
+    fi
+else
+    echo "[$(date -Is)] PS5 Gamescope: Steam runtime package non ancora inizializzato (primo bootstrap richiesto). Attesa rete/DHCP fino a 15s..." >> "$LOG_FILE"
+    if ! wait_for_network 15; then
+        echo "[$(date -Is)] PS5 Gamescope ERRORE: Connessione di rete assente dopo 15s al primo avvio di Steam." >> "$LOG_FILE"
+        echo "[$(date -Is)] Attivazione fallback automatico a KDE Plasma Desktop (exit 72)." >> "$LOG_FILE"
         mkdir -p /home/steam/.config
         cat << 'NOTIFY_EOF' > /home/steam/.config/ps5-steam-firstboot-alert.txt
 ATTENZIONE: Al primo avvio, Steam necessita di una connessione internet attiva (cavo Ethernet o dongle Wi-Fi USB) per scaricare i componenti di gioco (~400 MB).
@@ -148,13 +196,7 @@ NOTIFY_EOF
         chown -R steam:steam /home/steam/.config 2>/dev/null || true
         exit 72
     fi
-    echo "[$(date -Is)] Connessione presente: procedo con il primo bootstrap di Steam sotto Gamescope." >> "$LOG_FILE"
-fi
-
-# 4. Parametri Steam resilienti (Steam Deck UI + noverifyfiles se già bootstrappato)
-STEAM_ARGS=(-gamepadui -steamos)
-if [ -f "$STEAM_INSTALLED_FLAG" ]; then
-    STEAM_ARGS+=(-noverifyfiles)
+    echo "[$(date -Is)] Connessione attiva confermata: procedo con il primo bootstrap di Steam sotto Gamescope." >> "$LOG_FILE"
 fi
 
 # 5. Composizione argomenti Gamescope

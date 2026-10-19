@@ -116,7 +116,7 @@ case "$SESSION" in
     next_req=$(printf '%s' "$next_req" | tr -d '\r\n\t ')
 
     # Caso 1: Switch volontario al Desktop richiesto dall'utente ("Passa al Desktop")
-    if [ -f "$SWITCH_MARKER" ] || [ "$next_req" = "desktop" ] || [ "$next_req" = "plasma" ]; then
+    if [ -f "$SWITCH_MARKER" ] || { [ "$gs_exit" -eq 0 ] && { [ "$next_req" = "desktop" ] || [ "$next_req" = "plasma" ]; }; }; then
         rm -f "$SWITCH_MARKER" 2>/dev/null || true
         echo "[$(date -Is)] PS5 Session: Passaggio volontario da Gamescope a KDE Plasma Desktop." >>"$FALLBACK_LOG"
         _start_kde_plasma

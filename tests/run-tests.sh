@@ -518,6 +518,26 @@ test_module_gamescope() {
     else
         say_fail "setcap cap_sys_nice non registrato negli stub"
     fi
+
+    # Verifica rilevamento multi-criterio di Steam già installato (steam_client_steamdeck_stable_ubuntu12.installed e ubuntu12_32/steam)
+    local mock_steam_dir="$SANDBOX_DIR/mock_steam"
+    mkdir -p "$mock_steam_dir/package" "$mock_steam_dir/ubuntu12_32"
+    local steam_detect_res
+    steam_detect_res=$(PS5_STEAM_DIR="$mock_steam_dir" bash -c '
+        eval "$(sed -n "/^STEAM_DIR=/,/^wait_for_network()/p" "'"$gs_script"'" | sed "\$d")"
+        is_steam_installed && r0=0 || r0=1
+        echo "deck_manifest" > "$STEAM_DIR/package/steam_client_steamdeck_stable_ubuntu12.installed"
+        is_steam_installed && r1=0 || r1=1
+        rm -f "$STEAM_DIR/package/"*.installed
+        echo "elf_bin" > "$STEAM_DIR/ubuntu12_32/steam"
+        is_steam_installed && r2=0 || r2=1
+        echo "${r0},${r1},${r2}"
+    ')
+    if [ "$steam_detect_res" = "1,0,0" ]; then
+        say_pass "is_steam_installed rileva correttamente sia steam_client_steamdeck_stable_ubuntu12.installed sia ubuntu12_32/steam"
+    else
+        say_fail "Errore in is_steam_installed (atteso 1,0,0 - ottenuto: $steam_detect_res)"
+    fi
 }
 
 # ------------------------------------------------------------------------------
