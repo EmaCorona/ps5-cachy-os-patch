@@ -1,0 +1,33 @@
+name: CI Test Suite
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  test:
+    name: Run Automated Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools e2fsprogs shellcheck
+
+      - name: Check syntax with bash
+        run: |
+          for f in bin/*.sh lib/core/*.sh lib/modules/*.sh fix_ps5_boot.sh ps5-cachy-os-patch.sh tests/*.sh; do
+            bash -n "$f"
+          done
+
+      - name: Run automated test suite
+        run: |
+          bash tests/run-all-tests.sh
