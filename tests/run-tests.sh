@@ -310,7 +310,7 @@ EOS')
 }
 
 # ------------------------------------------------------------------------------
-# 4. Test Modulo Ventole (Curva Estesa a 8 Fasce, Isteresi 2°C e ps5-temp)
+# 4. Test Modulo Ventole (Curva Continua 12 Zone / 1°C, Deadband 2°C e Slew-Rate)
 # ------------------------------------------------------------------------------
 test_module_fan() {
     source "$REPO_DIR/lib/core/common.sh"
@@ -338,49 +338,60 @@ test_module_fan() {
         say_fail "Configurazione udev/systemd del controllo ventola incompleta"
     fi
 
-    # Verifica funzionale delle 8 fasce e dell'isteresi di 2°C
+    # Verifica funzionale delle 12 zone continue, Deadband 2°C e Slew-Rate Limiter (+1°C/ciclo)
     local fan_Check
     fan_Check=$(PS5_FAN_LIB_ONLY=1 bash -c '
         source "'"$daemon_bin"'"
-        # Verifica le 8 fasce in salita: 40->0(62), 45->1(58), 52->2(54), 60->3(50), 65->4(46), 71->5(42), 78->6(38), 83->7(30)
-        s0=$(compute_step_with_hysteresis 40 -1)
-        s1=$(compute_step_with_hysteresis 45 "$s0")
-        s2=$(compute_step_with_hysteresis 52 "$s1")
-        s3=$(compute_step_with_hysteresis 60 "$s2")
-        s4=$(compute_step_with_hysteresis 65 "$s3")
-        s5=$(compute_step_with_hysteresis 71 "$s4")
-        s6=$(compute_step_with_hysteresis 78 "$s5")
-        s7=$(compute_step_with_hysteresis 83 "$s6")
-        targets="${STEP_TARGET_TEMP[$s0]},${STEP_TARGET_TEMP[$s1]},${STEP_TARGET_TEMP[$s2]},${STEP_TARGET_TEMP[$s3]},${STEP_TARGET_TEMP[$s4]},${STEP_TARGET_TEMP[$s5]},${STEP_TARGET_TEMP[$s6]},${STEP_TARGET_TEMP[$s7]}"
+        # 1. Verifica interpolazione continua sulle 12 zone:
+        # 38->65, 40->63, 44->60, 48->57, 52->54, 56->51, 60->48, 64->45, 68->42, 72->39, 76->35, 82->28
+        z1=$(compute_raw_target_temp 38)
+        z2=$(compute_raw_target_temp 40)
+        z3=$(compute_raw_target_temp 44)
+        z4=$(compute_raw_target_temp 48)
+        z5=$(compute_raw_target_temp 52)
+        z6=$(compute_raw_target_temp 56)
+        z7=$(compute_raw_target_temp 60)
+        z8=$(compute_raw_target_temp 64)
+        z9=$(compute_raw_target_temp 68)
+        z10=$(compute_raw_target_temp 72)
+        z11=$(compute_raw_target_temp 76)
+        z12=$(compute_raw_target_temp 82)
+        zones="${z1},${z2},${z3},${z4},${z5},${z6},${z7},${z8},${z9},${z10},${z11},${z12}"
 
-        # Verifica isteresi in discesa dalla fascia 2 (soglia 50°C, scende solo sotto 48°C):
-        # A 49°C e 48°C deve restare in fascia 2 (target 54), a 47°C scende in fascia 1 (target 58)
-        h_stay1=$(compute_step_with_hysteresis 49 2)
-        h_stay2=$(compute_step_with_hysteresis 48 2)
-        h_drop=$(compute_step_with_hysteresis 47 2)
-        echo "${targets}|${h_stay1},${h_stay2},${h_drop}"
+        # 2. Verifica Deadband 2°C: da 50°C (target 56) scendendo a 49°C e 48°C resta a 56, a 47°C sale a 57
+        t50=$(compute_dynamic_target 50 -1)
+        t49=$(compute_dynamic_target 49 "$t50")
+        t48=$(compute_dynamic_target 48 "$t49")
+        t47=$(compute_dynamic_target 47 "$t48")
+
+        # 3. Verifica Slew-Rate Limiter anti-heat-soak: da 70°C (target 41) crollando a 40°C, sale di +1°C per ciclo (42, 43, 44)
+        c0=$(compute_dynamic_target 70 -1)
+        c1=$(compute_dynamic_target 40 "$c0")
+        c2=$(compute_dynamic_target 40 "$c1")
+        c3=$(compute_dynamic_target 40 "$c2")
+        echo "${zones}|${t50},${t49},${t48},${t47}|${c0},${c1},${c2},${c3}"
     ')
-    if [ "$fan_Check" = "62,58,54,50,46,42,38,30|2,2,1" ]; then
-        say_pass "Curva a 8 fasce (62..30°C) e isteresi di 2°C in raffreddamento verificate"
+    if [ "$fan_Check" = "65,63,60,57,54,51,48,45,42,39,35,28|56,56,56,57|41,42,43,44" ]; then
+        say_pass "Curva continua a 12 zone (65..28°C), Deadband 2°C e Slew-Rate Limiter (+1°C/ciclo) verificati"
     else
-        say_fail "Errore nel calcolo curva 8 fasce o isteresi: $fan_Check"
+        say_fail "Errore nel calcolo curva continua 12 zone / deadband / slew-rate: $fan_Check"
     fi
 
-    # Verifica scrittura su target_temp e fallback pwm con --once
+    # Verifica scrittura su target_temp e fallback pwm con --once a 47°C (target=58, pwm=84)
     local mock_target="$SANDBOX_DIR/mock_target_temp"
     local mock_hwmon="$SANDBOX_DIR/mock_hwmon"
     mkdir -p "$mock_hwmon/hwmon0"
     echo "50" > "$mock_target"
-    echo "46000" > "$mock_hwmon/hwmon0/temp1_input"
+    echo "47000" > "$mock_hwmon/hwmon0/temp1_input"
     echo "0" > "$mock_hwmon/hwmon0/pwm1"
     PS5_FAN_TARGET_FILE="$mock_target" PS5_HWMON_BASE="$mock_hwmon" "$daemon_bin" --once
     local applied_target applied_pwm
     applied_target=$(cat "$mock_target" 2>/dev/null || echo "")
     applied_pwm=$(cat "$mock_hwmon/hwmon0/pwm1" 2>/dev/null || echo "")
-    if [ "$applied_target" = "58" ] && [ "$applied_pwm" = "75" ]; then
-        say_pass "Esecuzione --once scrive correttamente target_temp=58 e pwm=75 a 46°C (Fascia 2 Whisper Desktop)"
+    if [ "$applied_target" = "58" ] && [ "$applied_pwm" = "84" ]; then
+        say_pass "Esecuzione --once scrive correttamente target_temp=58 e pwm=84 a 47°C (Zona 4 Whisper Active)"
     else
-        say_fail "Scrittura target_temp/pwm errata a 46°C (target=$applied_target, pwm=$applied_pwm)"
+        say_fail "Scrittura target_temp/pwm errata a 47°C (target=$applied_target, pwm=$applied_pwm)"
     fi
 }
 
