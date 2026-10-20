@@ -11,7 +11,7 @@ Gestire due aspetti separati: evitare il reload automatico di `btusb` che può p
 
 1. Convalida il mount della root CachyOS.
 2. Scrive `options btusb reset=0` in `/etc/modprobe.d/ps5-bluetooth.conf`.
-3. Installa `ps5-bluetooth-firmware.service`, un servizio `oneshot` ordinato dopo `systemd-modules-load.service` e prima di `bluetooth.service`. Il comando attende brevemente, prova a rimuovere `btusb` e lo ricarica.
+3. Installa `ps5-bluetooth-firmware.service`, un servizio `oneshot` ordinato dopo `systemd-modules-load.service` e prima di `bluetooth.service`. Il comando carica `btusb` in modo sicuro (`modprobe btusb`) senza effettuare un unbinding o unload distruttivo (`modprobe -r`), prevenendo blocchi o timeout dell'hub USB interno Salina (`usb 5-1: error -110`).
 4. Installa `/usr/local/sbin/ps5-bt-quiet`. Lo script attende la comparsa delle interfacce `hciN`, poi esegue fino a tre scansioni.
 5. Per leggere il BD address prova `btmgmt` con timeout e, se disponibile, usa `hciconfig` come fallback. Un indirizzo vuoto o nullo viene trattato come controller fantasma e il codice prova a spegnerlo. Un controller con indirizzo valido viene acceso e selezionato tramite `bluetoothctl`.
 6. Installa e abilita `ps5-bt-quiet.service` in `multi-user.target.wants`, dopo il servizio Bluetooth.
@@ -21,7 +21,7 @@ Gestire due aspetti separati: evitare il reload automatico di `btusb` che può p
 | Percorso nella root di destinazione | Ruolo |
 | :--- | :--- |
 | `etc/modprobe.d/ps5-bluetooth.conf` | Opzione `btusb reset=0`. |
-| `etc/systemd/system/ps5-bluetooth-firmware.service` | Reload controllato del driver `btusb`. |
+| `etc/systemd/system/ps5-bluetooth-firmware.service` | Caricamento sicuro del driver `btusb` (senza unload distruttivo). |
 | `usr/local/sbin/ps5-bt-quiet` | Individuazione dei controller `hciN` e tentativo di selezione. |
 | `etc/systemd/system/ps5-bt-quiet.service` | Esecuzione della utility al boot, con timeout unit di 60 secondi. |
 | `etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service` | Abilitazione del reload firmware/driver. |

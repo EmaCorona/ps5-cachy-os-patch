@@ -36,6 +36,17 @@ module_kde_run() {
         log_info "Rimossa configurazione kwinoutputconfig.json residua per sincronizzazione KDE 1080p60"
     fi
 
+    # 1c. Configurazione variabili DRM KWin in /etc/environment per prevenire fallimento modeset atomico (RA24)
+    sudo touch "${cachy_mnt}/etc/environment"
+    for env_var in "KWIN_DRM_PREFER_COLOR_DEPTH=24" "KWIN_DRM_NO_DIRECT_SCANOUT=1" "KWIN_FORCE_ASSUME_HDR_SUPPORT=0"; do
+        var_name="${env_var%%=*}"
+        if grep -q "^${var_name}=" "${cachy_mnt}/etc/environment" 2>/dev/null; then
+            sudo sed -i "s|^${var_name}=.*|${env_var}|" "${cachy_mnt}/etc/environment"
+        else
+            echo "${env_var}" | sudo tee -a "${cachy_mnt}/etc/environment" >/dev/null
+        fi
+    done
+
     # 2. Notificatore Desktop per avvisi di sistema, fallback Gamescope e primo avvio Steam
     sudo mkdir -p "${cachy_mnt}/usr/local/bin" "${cachy_mnt}/etc/xdg/autostart"
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/bin/ps5-desktop-notify" >/dev/null
@@ -86,10 +97,11 @@ module_kde_check() {
     local boot_mnt="$2"
 
     if [ -x "${cachy_mnt}/usr/local/bin/ps5-desktop-notify" ] && \
-       [ -f "${cachy_mnt}/etc/xdg/autostart/ps5-desktop-notify.desktop" ]; then
-        log_success "Ambiente KDE Plasma e notificatore desktop presenti."
+       [ -f "${cachy_mnt}/etc/xdg/autostart/ps5-desktop-notify.desktop" ] && \
+       grep -q "KWIN_DRM_NO_DIRECT_SCANOUT=1" "${cachy_mnt}/etc/environment" 2>/dev/null; then
+        log_success "Ambiente KDE Plasma, notificatore desktop e parametri KWin DRM presenti."
         return 0
     fi
-    log_warn "Notificatore desktop KDE non presente."
+    log_warn "Notificatore desktop KDE o parametri KWin DRM non presenti."
     return 1
 }

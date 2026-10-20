@@ -9,9 +9,14 @@ Orchestrare l'avvio grafico su `tty1`, consentire il passaggio volontario tra KD
 
 ## Come funziona
 
-### 1. Scelta della sessione
+### 1. Scelta della sessione e ambiente DRM
 
 Il modulo crea `/home/steam/.config/ps5-next-session` con valore `desktop`. Lo script `/etc/profile.d/ps5-tty-session.sh` legge quel file al login e usa `desktop` quando il file è mancante o vuoto. I valori `desktop` e `plasma` avviano direttamente `startplasma-wayland`; la richiesta `gamescope` attiva la procedura Gamescope.
+
+Quando viene avviato KDE Plasma (sia direttamente sia come fallback), la funzione `_start_kde_plasma` ed il fallback in `.bash_profile` configurano ed importano nell'ambiente utente (systemd e D-Bus) le variabili di stabilità DRM:
+- `KWIN_DRM_PREFER_COLOR_DEPTH=24`: forza 8bpc (XRGB8888);
+- `KWIN_DRM_NO_DIRECT_SCANOUT=1`: inibisce il direct scanout su display plane primario per evitare il rifiuto atomico del formato con canale alpha `RA24` su AMD Oberon DCN 2.0.1;
+- `KWIN_FORCE_ASSUME_HDR_SUPPORT=0`: disabilita tentativi forzati HDR.
 
 ### 2. Gate di disponibilità DRM
 
@@ -43,6 +48,9 @@ Il modulo crea o aggiorna `/usr/bin/steamos-session-select`. Il comando `gamesco
 | `PS5_SESSION_DRM_STABLE_SAMPLES` | Campioni stabili richiesti; default `3`. |
 | `PS5_SESSION_FILE` | Override del percorso file sessione. |
 | `PS5_FORCE_TTY1` | Flag per percorsi di test/avvio controllato del supervisore. |
+| `KWIN_DRM_NO_DIRECT_SCANOUT` | Variabile esportata per disabilitare direct scanout RA24 in KWin. |
+| `KWIN_DRM_PREFER_COLOR_DEPTH` | Variabile esportata per preferire 24-bit depth (8bpc) in KWin. |
+| `KWIN_FORCE_ASSUME_HDR_SUPPORT` | Variabile impostata a `0` per evitare che KWin assuma forzatamente il supporto HDR nella pipeline 8bpc. |
 
 ## Log e diagnosi
 
@@ -57,6 +65,6 @@ steamos-session-select desktop
 
 ## Verifica e limiti
 
-`module_session_check` cerca lo script di profilo, una stringa di fallback e il file di stato con un valore previsto. Non esegue un vero riavvio e non verifica che KWin o Gamescope possano acquisire il master DRM sul dispositivo reale. Il risultato dipende anche dai moduli `kde`, `gamescope` e `system` e dalla configurazione di boot.
+`module_session_check` cerca lo script di profilo, una stringa di fallback, la configurazione di `KWIN_DRM_NO_DIRECT_SCANOUT` e il file di stato con un valore previsto. Non esegue un vero riavvio e non verifica che KWin o Gamescope possano acquisire il master DRM sul dispositivo reale. Il risultato dipende anche dai moduli `kde`, `gamescope` e `system` e dalla configurazione di boot.
 
 Fonte primaria: [`lib/modules/session.sh`](../../lib/modules/session.sh).

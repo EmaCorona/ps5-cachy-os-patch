@@ -63,7 +63,7 @@ Per impostare un valore, rimuovere il commento dalla variabile interessata e usa
 | `usr/local/src/ps5-drm-8bpc.c` | Sorgente dello shim DRM. |
 | `usr/local/lib/libps5-drm-8bpc.so` | Libreria condivisa generata se la compilazione riesce. |
 | `usr/share/xdg-desktop-portal/gamescope-portals.conf` | Portal predefinito per Gamescope. |
-| `/etc/environment` | Può contenere `KWIN_DRM_PREFER_COLOR_DEPTH=24`. |
+| `/etc/environment` | Può contenere `KWIN_DRM_PREFER_COLOR_DEPTH=24` e i parametri DRM KWin. |
 
 ## Verifica e limiti
 

@@ -173,6 +173,9 @@ _start_kde_plasma() {
     export XDG_CURRENT_DESKTOP=KDE
     export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
+    export KWIN_DRM_PREFER_COLOR_DEPTH=24
+    export KWIN_DRM_NO_DIRECT_SCANOUT=1
+    export KWIN_FORCE_ASSUME_HDR_SUPPORT=0
 
     # Termina eventuali processi residui di Gamescope/Xwayland per liberare il master DRM (/dev/dri/card0)
     # e allinea l'ambiente di attivazione systemd/D-Bus a KDE
@@ -183,9 +186,9 @@ _start_kde_plasma() {
 
     if [ "${PS5_FORCE_TTY1:-0}" != "1" ] && command -v systemctl >/dev/null 2>&1; then
         systemctl --user stop xdg-desktop-portal.service xdg-desktop-portal-gtk.service 2>/dev/null || true
-        systemctl --user import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true
+        systemctl --user import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION KWIN_DRM_PREFER_COLOR_DEPTH KWIN_DRM_NO_DIRECT_SCANOUT KWIN_FORCE_ASSUME_HDR_SUPPORT 2>/dev/null || true
         if command -v dbus-update-activation-environment >/dev/null 2>&1 && [ -n "${DBUS_SESSION_BUS_ADDRESS-}" ]; then
-            dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true
+            dbus-update-activation-environment --systemd XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION KWIN_DRM_PREFER_COLOR_DEPTH KWIN_DRM_NO_DIRECT_SCANOUT KWIN_FORCE_ASSUME_HDR_SUPPORT 2>/dev/null || true
         fi
     fi
 
@@ -356,7 +359,7 @@ if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "${WAYLAND_DISPLAY-}" ] && [ -
         ps5_log session error "bash_profile emergenza: avvio forzato KDE Plasma su tty1"
         echo "[$(date -Is)] PS5 bash_profile FALLBACK: Avvio di emergenza KDE Plasma su tty1." >> "$HOME/.gamescope-fallback.log"
         echo "desktop" > "$HOME/.config/ps5-next-session" 2>/dev/null || true
-        export LIBSEAT_BACKEND=logind XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_SESSION_VERSION=6
+        export LIBSEAT_BACKEND=logind XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_SESSION_VERSION=6 KWIN_DRM_PREFER_COLOR_DEPTH=24 KWIN_DRM_NO_DIRECT_SCANOUT=1 KWIN_FORCE_ASSUME_HDR_SUPPORT=0
         if [ -x /usr/lib/plasma-dbus-run-session-if-needed ]; then
             /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
         else
@@ -378,9 +381,10 @@ module_session_check() {
 
     if [ -f "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" ] && \
        grep -q "PS5 Session FALLBACK" "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" && \
+       grep -q "KWIN_DRM_NO_DIRECT_SCANOUT" "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" && \
        [ -f "${cachy_mnt}/home/steam/.config/ps5-next-session" ] && \
        grep -qE "desktop|plasma|gamescope" "${cachy_mnt}/home/steam/.config/ps5-next-session"; then
-        log_success "Gestione sessione (KDE Desktop predefinito e switch Gamescope) attiva in ps5-tty-session.sh."
+        log_success "Gestione sessione (KDE Desktop predefinito, fix DRM KWin e switch Gamescope) attiva in ps5-tty-session.sh."
         return 0
     fi
     log_warn "Configurazione sessione incompleta."

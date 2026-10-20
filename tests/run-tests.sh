@@ -471,6 +471,16 @@ EOF
     else
         say_fail "Notificatore ps5-desktop-notify o autostart desktop mancante"
     fi
+
+    # Verifica configurazione variabili DRM KWin in /etc/environment
+    local env_file="$MOCK_ROOT/etc/environment"
+    if [ -f "$env_file" ] && \
+       grep -q "KWIN_DRM_NO_DIRECT_SCANOUT=1" "$env_file" && \
+       grep -q "KWIN_DRM_PREFER_COLOR_DEPTH=24" "$env_file"; then
+        say_pass "Variabili DRM KWin (NO_DIRECT_SCANOUT e PREFER_COLOR_DEPTH=24) configurate in /etc/environment"
+    else
+        say_fail "Variabili DRM KWin mancanti in /etc/environment"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -777,6 +787,14 @@ test_module_session() {
         say_pass "_start_kde_plasma sincronizza XDG_CURRENT_DESKTOP=KDE su systemd/D-Bus e resetta i portali Gamescope"
     else
         say_fail "_start_kde_plasma non sincronizza l'ambiente di attivazione KDE"
+    fi
+
+    if grep -q "KWIN_DRM_NO_DIRECT_SCANOUT=1" "$tty_profile" && \
+       grep -q "KWIN_DRM_PREFER_COLOR_DEPTH=24" "$tty_profile" && \
+       grep -q "import-environment.*KWIN_DRM_NO_DIRECT_SCANOUT" "$tty_profile"; then
+        say_pass "ps5-tty-session.sh esporta e importa variabili KWin DRM (NO_DIRECT_SCANOUT, COLOR_DEPTH=24)"
+    else
+        say_fail "ps5-tty-session.sh non esporta correttamente le variabili KWin DRM"
     fi
 
     local mock_gs_ok="$SANDBOX_DIR/mock_gs_ok.sh"
@@ -1187,13 +1205,15 @@ test_module_bluetooth() {
 
     local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
     local svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    local fw_svc="$MOCK_ROOT/etc/systemd/system/ps5-bluetooth-firmware.service"
     if [ -x "$quiet" ] && sh -n "$quiet" && grep -q "btmgmt --index" "$quiet" && \
        ! grep -q '/address' "$quiet" && \
        grep -q "After=bluetooth.service ps5-bluetooth-firmware.service" "$svc" && \
-       [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ]; then
-        say_pass "ps5-bt-quiet installato (lettura indirizzo via btmgmt/hciconfig, ordinato dopo il firmware)"
+       [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ] && \
+       [ -f "$fw_svc" ] && ! grep -q "modprobe -r btusb" "$fw_svc"; then
+        say_pass "ps5-bt-quiet installato e ps5-bluetooth-firmware evita reset distruttivo btusb"
     else
-        say_fail "ps5-bt-quiet mancante, non ordinato o basato su sysfs address inesistente"
+        say_fail "ps5-bt-quiet o ps5-bluetooth-firmware non configurati correttamente o con reset btusb attivo"
     fi
 }
 
@@ -1208,6 +1228,17 @@ test_module_cleanup() {
     mkdir -p "$MOCK_ROOT/home/steam/.config"
     echo '{"width": 3840, "height": 2160}' > "$MOCK_ROOT/home/steam/.config/kwinoutputconfig.json"
 
+    # Simula file autostart, binari e config orfani/dannosi
+    mkdir -p "$MOCK_ROOT/etc/xdg/autostart" "$MOCK_ROOT/usr/local/bin" "$MOCK_ROOT/etc" "$MOCK_ROOT/tmp" "$MOCK_ROOT/home/steam/.config/gamescope"
+    touch "$MOCK_ROOT/etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop"
+    touch "$MOCK_ROOT/etc/xdg/autostart/ps5-resolution.desktop"
+    touch "$MOCK_ROOT/usr/local/bin/ps5-bridge-auto-gamescope"
+    touch "$MOCK_ROOT/usr/local/bin/ps5-apply-resolution"
+    touch "$MOCK_ROOT/etc/ps5-display.conf"
+    touch "$MOCK_ROOT/home/steam/.config/gamescope/ps5-resolution.conf"
+    touch "$MOCK_ROOT/tmp/ps5-bridge-initialized"
+    echo "PS5_OUTPUT_WIDTH=3840" > "$MOCK_ROOT/etc/ps5-gamescope.conf"
+
     module_cleanup_run "$MOCK_ROOT" "$MOCK_BOOT"
 
     # Verifica rimozione kwinoutputconfig.json 4K stale
@@ -1215,6 +1246,27 @@ test_module_cleanup() {
         say_pass "kwinoutputconfig.json 4K stale rimosso correttamente"
     else
         say_fail "kwinoutputconfig.json 4K stale ancora presente"
+    fi
+
+    # Verifica rimozione autostart, binari e configurazioni obsolete
+    if [ ! -f "$MOCK_ROOT/etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop" ] && \
+       [ ! -f "$MOCK_ROOT/etc/xdg/autostart/ps5-resolution.desktop" ] && \
+       [ ! -f "$MOCK_ROOT/usr/local/bin/ps5-bridge-auto-gamescope" ] && \
+       [ ! -f "$MOCK_ROOT/usr/local/bin/ps5-apply-resolution" ] && \
+       [ ! -f "$MOCK_ROOT/etc/ps5-display.conf" ] && \
+       [ ! -f "$MOCK_ROOT/home/steam/.config/gamescope/ps5-resolution.conf" ] && \
+       [ ! -f "$MOCK_ROOT/tmp/ps5-bridge-initialized" ]; then
+        say_pass "File autostart, binari e config obsoleti rimossi correttamente"
+    else
+        say_fail "File autostart, binari o config obsoleti ancora presenti"
+    fi
+
+    # Verifica sanitizzazione /etc/ps5-gamescope.conf
+    if [ -f "$MOCK_ROOT/etc/ps5-gamescope.conf" ] && \
+       ! grep -qE '^[[:space:]]*PS5_OUTPUT_WIDTH=[0-9]+' "$MOCK_ROOT/etc/ps5-gamescope.conf"; then
+        say_pass "Template /etc/ps5-gamescope.conf sanitizzato correttamente"
+    else
+        say_fail "Template /etc/ps5-gamescope.conf non sanitizzato o con override non commentati"
     fi
 
     # Verifica rimozione file steam.pid e steam.pipe
@@ -1235,10 +1287,11 @@ test_module_cleanup() {
 
     # Verifica script e servizio ps5-boot-cleanup
     if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup" ] && \
-       [ -f "$MOCK_ROOT/etc/systemd/system/ps5-boot-cleanup.service" ]; then
-        say_pass "Servizio e script ps5-boot-cleanup installati ed eseguibili"
+       [ -f "$MOCK_ROOT/etc/systemd/system/ps5-boot-cleanup.service" ] && \
+       grep -q "ps5-bridge-auto-gamescope" "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup"; then
+        say_pass "Servizio e script ps5-boot-cleanup installati con sanificazione estesa"
     else
-        say_fail "ps5-boot-cleanup o relativo servizio non installati"
+        say_fail "ps5-boot-cleanup o relativo servizio non installati o privi di sanificazione estesa"
     fi
 }
 

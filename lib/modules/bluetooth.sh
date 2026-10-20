@@ -38,7 +38,7 @@ ConditionPathExists=/usr/lib/firmware
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'sleep 1; modprobe -r btusb 2>/dev/null || true; sleep 1; modprobe btusb'
+ExecStart=/bin/sh -c 'modprobe btusb 2>/dev/null || true'
 
 [Install]
 WantedBy=bluetooth.target

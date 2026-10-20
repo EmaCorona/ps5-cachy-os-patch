@@ -4,14 +4,14 @@
 # ==============================================================================
 
 module_cleanup_info() {
-    echo "Ripulitura lock orfani (steam.pid), reset sessione, bonifica coredump e servizio auto-cleanup"
+    echo "Ripulitura lock orfani (steam.pid), reset sessione, bonifica file/autostart obsoleti e servizio auto-cleanup"
 }
 
 module_cleanup_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    log_step "Modulo Cleanup: Bonifica stato orfano, lock residui e coredump..."
+    log_step "Modulo Cleanup: Bonifica stato orfano, lock residui, autostart obsoleti e coredump..."
 
     if [ -z "$cachy_mnt" ] || [ ! -d "$cachy_mnt" ]; then
         log_error "Root filesystem CachyOS non trovato."
@@ -32,6 +32,76 @@ module_cleanup_run() {
             log_info "Rimosso file orfano: $(basename "$stale")"
         fi
     done
+
+    # 1b. Rimozione file autostart XDG e script orfani/dannosi derivati da vecchi branch o test
+    for stale_autostart in \
+        "${cachy_mnt}/etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop" \
+        "${cachy_mnt}/etc/xdg/autostart/ps5-resolution.desktop" \
+        "${cachy_mnt}/home/steam/.config/autostart/ps5-bridge-auto-gamescope.desktop" \
+        "${cachy_mnt}/home/steam/.config/autostart/ps5-resolution.desktop"
+    do
+        if [ -f "$stale_autostart" ]; then
+            sudo rm -f "$stale_autostart"
+            log_info "Rimosso autostart orfano: $(basename "$stale_autostart")"
+        fi
+    done
+
+    # 1c. Rimozione script obsoleti dismessi in /usr/local/bin e /usr/local/sbin
+    for stale_bin in \
+        "${cachy_mnt}/usr/local/bin/ps5-bridge-auto-gamescope" \
+        "${cachy_mnt}/usr/local/bin/ps5-apply-resolution" \
+        "${cachy_mnt}/usr/local/bin/ps5-drm-setup"
+    do
+        if [ -f "$stale_bin" ]; then
+            sudo rm -f "$stale_bin"
+            log_info "Rimosso script dismesso: $(basename "$stale_bin")"
+        fi
+    done
+
+    # 1d. Rimozione configurazioni e marker temporanei obsoleti
+    for stale_conf in \
+        "${cachy_mnt}/etc/ps5-display.conf" \
+        "${cachy_mnt}/home/steam/.config/gamescope/ps5-resolution.conf" \
+        "${cachy_mnt}/home/steam/.ps5-display.log" \
+        "${cachy_mnt}/tmp/ps5-bridge-initialized" \
+        "${cachy_mnt}/tmp/ps5-bridge-warming" \
+        "${cachy_mnt}/tmp/ps5-manual-desktop" \
+        "${cachy_mnt}/tmp/ps5-user-session-switch"
+    do
+        if [ -f "$stale_conf" ]; then
+            sudo rm -f "$stale_conf"
+            log_info "Rimossa configurazione/marker obsoleto: $(basename "$stale_conf")"
+        fi
+    done
+
+    # 1e. Sanitizzazione /etc/ps5-gamescope.conf se contiene override 4K non commentati da versioni precedenti
+    local gs_conf="${cachy_mnt}/etc/ps5-gamescope.conf"
+    if [ -f "$gs_conf" ]; then
+        if grep -q "Sincronizzato automaticamente da ps5-cachy-os-patch" "$gs_conf" 2>/dev/null || \
+           grep -qE '^[[:space:]]*PS5_OUTPUT_WIDTH=[0-9]+' "$gs_conf" 2>/dev/null; then
+            cat << 'EOF' | sudo tee "$gs_conf" >/dev/null
+# /etc/ps5-gamescope.conf - Configurazione opzionale Gamescope PS5
+# Lasciare commentato per utilizzare l'auto-rilevamento dinamico nativo via DRM/EDID.
+
+# Risoluzione fisica del display (Output)
+# PS5_OUTPUT_WIDTH=1920
+# PS5_OUTPUT_HEIGHT=1080
+
+# Risoluzione interna di rendering UI e giochi (Nested)
+# Utile su TV 4K per renderizzare a 1080p e scalare in 4K con FSR:
+# PS5_NESTED_WIDTH=1920
+# PS5_NESTED_HEIGHT=1080
+
+# Refresh rate forzato (es. 60 o 120). Di default Gamescope negozia il refresh nativo dello schermo.
+# PS5_REFRESH_RATE=60
+
+# Connettore di output preferito (default: DP-1,HDMI-A-1 o auto-rilevato)
+# PS5_OUTPUT_CONN="DP-1"
+EOF
+            sudo chmod 0644 "$gs_conf"
+            log_info "Sanitizzato /etc/ps5-gamescope.conf (ripristinato template opzionale commentato)"
+        fi
+    fi
 
     # 2. Imposta lo stato sessione predefinito su KDE Plasma Desktop
     sudo mkdir -p "${cachy_mnt}/home/steam/.config"
@@ -68,8 +138,14 @@ ps5_log boot info "vram.txt=$(cat /boot/efi/vram.txt 2>/dev/null || echo n/a) ne
 # Remove stale Steam pid/pipes, session switch markers, and old fallback alerts
 rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe 2>/dev/null || true
 rm -f /home/steam/.local/share/Steam/*.pid /home/steam/.local/share/Steam/*.pipe 2>/dev/null || true
-rm -f /tmp/.X*-lock /tmp/.x11-unix/X* /tmp/ps5-user-session-switch 2>/dev/null || true
+rm -f /tmp/.X*-lock /tmp/.x11-unix/X* /tmp/ps5-user-session-switch /tmp/ps5-bridge-* /tmp/ps5-manual-desktop 2>/dev/null || true
 rm -f /home/steam/.config/ps5-steam-firstboot-alert.txt 2>/dev/null || true
+
+# Remove obsolete/harmful autostart entries and local binaries
+rm -f /etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop /etc/xdg/autostart/ps5-resolution.desktop 2>/dev/null || true
+rm -f /home/steam/.config/autostart/ps5-bridge-auto-gamescope.desktop /home/steam/.config/autostart/ps5-resolution.desktop 2>/dev/null || true
+rm -f /usr/local/bin/ps5-bridge-auto-gamescope /usr/local/bin/ps5-apply-resolution /etc/ps5-display.conf 2>/dev/null || true
+rm -f /home/steam/.config/gamescope/ps5-resolution.conf /home/steam/.ps5-display.log 2>/dev/null || true
 
 # If kwinoutputconfig.json forces 4K (3840), remove it to let KWin adhere to the stable 1080p60 kernel link
 if [ -f /home/steam/.config/kwinoutputconfig.json ] && grep -q "3840" /home/steam/.config/kwinoutputconfig.json 2>/dev/null; then
