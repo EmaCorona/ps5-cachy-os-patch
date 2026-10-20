@@ -5,9 +5,9 @@
 
 <br>
 
-Raccolta completa di patch, moduli di configurazione e strumenti di ripristino per l'esecuzione ottimizzata di **CachyOS Linux** su console **PlayStation 5** (PS5 Fat e Slim, modelli Digital e Standard con lettore disco, APU Oberon Zen 2 + RDNA 2, Southbridge Salina rev2).
+Raccolta di script di post-installazione, configurazioni di sistema, moduli specializzati e strumenti di diagnostica/ripristino per installazioni **CachyOS Linux x86_64** avviate su **PlayStation 5**. Il repository interviene su un'installazione già predisposta e sui filesystem montati dall'host: non partiziona il disco e non installa la distribuzione.
 
-Questo toolkit risolve tutti i problemi critici noti dell'hardware PS5 sotto Linux: crash e kernel panic del Wi-Fi PCIe, ventola bloccata al massimo o rumorosa, perdita dell'orologio hardware RTC/TLS, deadlock di rete, allocazione della VRAM per carichi 3D, rilevamento dinamico della risoluzione nativa del monitor/TV su Gamescope e KDE senza forzature statiche, crash di Gamescope all'avvio e gestione resiliente del desktop con fallback automatico su KDE Plasma.
+I moduli implementano workaround per alcuni problemi osservati o previsti su Linux per PS5: stabilità del Wi-Fi PCIe e gestione dei driver interni/USB, configurazione della ventola, sincronizzazione dell'orologio per NTP/TLS, profilo Ethernet, valore VRAM, diagnostica display DRM e avvio opzionale di Gamescope con fallback su KDE Plasma. Il comportamento reale dipende da chassis, kernel, driver, firmware, display collegato e file di boot; l'applicazione delle patch non garantisce che ogni problema sia risolto su tutte le configurazioni.
 
 <br>
 
@@ -19,15 +19,16 @@ Questo toolkit risolve tutti i problemi critici noti dell'hardware PS5 sotto Lin
 ## ⚡ Guida Rapida all'Uso (Quick Start)
 
 ### 1. Patch Completa da PC Host (Consigliato)
-Collega la chiavetta USB o l'SSD esterno contenente CachyOS PS5 a un computer Linux (Fedora, Arch, Ubuntu, Bazzite, Debian, ecc.):
+Collega al PC Linux il supporto contenente l'installazione CachyOS da modificare (chiavetta USB o SSD/NVMe accessibile al PC) e monta le sue partizioni:
 
 ```bash
 git clone https://github.com/EmaCorona/ps5-cachy-os-patch.git
 cd ps5-cachy-os-patch
-sudo ./ps5-cachy-os-patch.sh
+sudo ./ps5-cachy-os-patch.sh --dry-run   # verifica prima i mount e lo stato dei moduli
+sudo ./ps5-cachy-os-patch.sh             # applica le patch dopo aver controllato l'output
 ```
 
-Lo script rileva automaticamente i punti di mount delle partizioni (`cachyos` ext4 e `boot` FAT32), controlla l'integrità dei filesystem (incluso l'azzeramento del dirty bit FAT32), applica tutti i moduli in sequenza idempotente e sincronizza i dischi.
+Il patcher cerca la root CachyOS e la partizione di boot tra i filesystem montati dall'host, usando mount point riconosciuti sotto `/run/media`, `/media` o `/mnt` e indizi quali la root `cachyos` e i file di boot. Controlla sempre l'output di `--dry-run` e assicurati che siano state rilevate soltanto le partizioni desiderate. L'esecuzione normale tenta il controllo/riparazione dei filesystem ext4 e FAT32, crea un backup locale dei file critici in `$HOME/ps5_master_backup`, applica i moduli in sequenza e sincronizza i dischi. Il progetto non crea partizioni: opera su un'installazione Linux già esistente.
 
 ### 2. Ripristino Rapido Boot di Emergenza
 Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è bloccata al 100% o il boot si interrompe a causa di crash nei driver:
@@ -35,7 +36,7 @@ Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è blocca
 ```bash
 sudo ./fix_ps5_boot.sh
 ```
-Questo comando esegue una bonifica rapida focalizzata sui componenti essenziali: fsck ext4/FAT32, rimozione lock orfani, VRAM 4 GB, driver Wi-Fi/Ethernet stabili, baseline acustica ventole e ripristino della sessione grafica.
+Questo comando esegue una bonifica mirata: controlla la partizione FAT32 di boot, rimuove lock/stati orfani, riapplica le configurazioni di sistema e rete, imposta il valore VRAM, riconfigura il controllo ventole e ripristina la configurazione KDE/Gamescope/sessione. Non reinstalla Linux e non garantisce la risoluzione di problemi dovuti a kernel, firmware o hardware.
 
 ### 3. Opzioni Avanzate da Linea di Comando (CLI)
 L'orchestratore modulare supporta l'esecuzione selettiva, verifiche preventive senza scrittura e diagnosi:
@@ -52,7 +53,7 @@ sudo ./ps5-cachy-os-patch.sh --module wifi
 # Modalità Dry-Run (ispezione dello stato corrente senza effettuare scritture su disco)
 sudo ./ps5-cachy-os-patch.sh --dry-run
 
-# Salta il controllo di integrità filesystem per velocizzare l'applicazione
+# Salta i controlli fsck su ext4 e FAT32/vfat (solo se hai già verificato i filesystem)
 sudo ./ps5-cachy-os-patch.sh --skip-fsck
 ```
 
@@ -62,70 +63,67 @@ sudo ./ps5-cachy-os-patch.sh --skip-fsck
 
 Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
 - **`lib/core/`**: Funzioni trasversali di sistema (rilevamento punti di mount e block device, controllo integrità filesystem ext4 e FAT32, backup preventivo e logging standardizzato).
-- **`lib/modules/`**: Moduli specializzati, indipendenti e idempotenti. Ciascun modulo espone le funzioni `module_<nome>_run` e `module_<nome>_check`.
+- **`lib/modules/`**: Moduli specializzati, indipendenti e idempotenti. Ciascun modulo espone le funzioni `module_<nome>_run` e `module_<nome>_check`. Per il funzionamento dettagliato di ogni componente consulta l'[indice della documentazione dei moduli](docs/modules/README.md), con una scheda dedicata a ciascun modulo.
 
 ### Mappa dei Moduli Disponibili
 
 | Modulo | File | Ruolo e Funzionamento |
 | :--- | :--- | :--- |
-| **`cleanup`** | [`lib/modules/cleanup.sh`](lib/modules/cleanup.sh) | Rimuove lock/socket orfani di Steam (`steam.pid`/`steam.pipe`) e X11; pulisce i coredump e abilita il servizio early-boot `ps5-boot-cleanup`. |
-| **`vram`** | [`lib/modules/vram.sh`](lib/modules/vram.sh) | Imposta 4 GB di VRAM dedicata (`0x100000000`) in `vram.txt` per la massima stabilità grafica in Gamescope e nei giochi 3D. |
-| **`firstboot`** | [`lib/modules/firstboot.sh`](lib/modules/firstboot.sh) | Disabilita il wizard a finestre di primo avvio di CachyOS per evitare blocchi e schermate blu in assenza di controller configurati. |
-| **`bluetooth`** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Spegne il controller fantasma (`00:00:00:00:00:00`) tramite `ps5-bt-quiet` e attiva il Bluetooth reale, risolvendo l'errore kernel `-16`. |
-| **`ethernet`** | [`lib/modules/ethernet.sh`](lib/modules/ethernet.sh) | Ottimizza Salina GBE (offload e IPv6 disabilitati), integra la sincronizzazione orario HTTP/TLS contro la perdita dell'RTC e il log `ps5-net-diag`. |
-| **`wifi`** | [`lib/modules/wifi.sh`](lib/modules/wifi.sh) | Abilita il Wi-Fi interno NXP IW620 (`moal`), inserisce in blacklist il modulo PCIe `mt7921e` instabile e preserva le schede Wi-Fi USB. |
-| **`fan`** | [`lib/modules/fan.sh`](lib/modules/fan.sh) | Gestisce il raffreddamento continuo a 12 zone (1°C) con deadband 2°C, limitatore anti-heat-soak e include l'utility `ps5-temp`. |
-| **`kde`** | [`lib/modules/kde.sh`](lib/modules/kde.sh) | Configura KDE Plasma 6 Wayland con auto-detection della risoluzione nativa del display, switch pulito della sessione con `steamos-session-select` e notifiche desktop di fallback. |
-| **`gamescope`** | [`lib/modules/gamescope.sh`](lib/modules/gamescope.sh) | Avvia Gamescope Gaming Mode con auto-rilevamento dinamico DRM della risoluzione nativa (4K, 1440p, 1080p, Ultrawide), fallback sicuro a 1080p, supporto manifest Steam Deck e priorità real-time (`cap_sys_nice`). |
-| **`session`** | [`lib/modules/session.sh`](lib/modules/session.sh) | Supervisore TTY1: avvio automatico in Gamescope Mode e fallback immediato su KDE Plasma Wayland in caso di crash o errore (< 20s). |
-| **`system`** | [`lib/modules/system.sh`](lib/modules/system.sh) | Stabilizzazione video del bridge DisplayPort->HDMI Panasonic MN864739 a 1080p60 (148.5 MHz) in `cmdline.txt`, auto-riparazione filesystem, sudo senza password per `%wheel`, journal persistente, mount fstab sicuro con `flush` e snapshot diagnostici in `ps5-diag/`. |
+| **[`cleanup`](docs/modules/cleanup.md)** | [`lib/modules/cleanup.sh`](lib/modules/cleanup.sh) | Rimuove lock/PID/socket orfani e residui X11, pulisce i coredump, imposta `desktop` come sessione predefinita e abilita `ps5-boot-cleanup.service`. |
+| **[`vram`](docs/modules/vram.md)** | [`lib/modules/vram.sh`](lib/modules/vram.sh) | Scrive il valore `0x100000000` (4 GiB) in `vram.txt` sulla partizione di boot; l'effetto finale dipende dal loader e dal kernel utilizzati. |
+| **[`firstboot`](docs/modules/firstboot.md)** | [`lib/modules/firstboot.sh`](lib/modules/firstboot.sh) | Disabilita il wizard a finestre di primo avvio di CachyOS per evitare blocchi e schermate blu in assenza di controller configurati. |
+| **[`bluetooth`](docs/modules/bluetooth.md)** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Configura il caricamento firmware Bluetooth e il servizio `ps5-bt-quiet`, che identifica le interfacce presenti, disattiva quella fantasma quando riconosciuta e prova ad attivare il controller valido. |
+| **[`ethernet`](docs/modules/ethernet.md)** | [`lib/modules/ethernet.sh`](lib/modules/ethernet.sh) | Crea profili NetworkManager per Ethernet, disabilita IPv6 nei profili generati, configura `systemd-timesyncd` con server NTP e fallback HTTP Date e raccoglie diagnostica di rete post-boot (`ps5-net-diag`). |
+| **[`wifi`](docs/modules/wifi.md)** | [`lib/modules/wifi.sh`](lib/modules/wifi.sh) | Gestisce il firmware NXP IW620 quando rilevato e disponibile, evita il driver PCIe `mt7921e` considerato instabile nel target e mantiene il supporto ai dongle Wi-Fi USB. Il risultato dipende dal chip e dal firmware presente. |
+| **[`fan`](docs/modules/fan.md)** | [`lib/modules/fan.sh`](lib/modules/fan.sh) | Installa `ps5-fan-daemon`, con profilo termico continuo interpolato al grado, isteresi, limitatore di raffreddamento graduale e fallback PWM se esposto dall'hardware; include `ps5-temp`. |
+| **[`kde`](docs/modules/kde.md)** | [`lib/modules/kde.sh`](lib/modules/kde.sh) | Prepara KDE Plasma 6 Wayland, rimuove una configurazione KWin 4K obsoleta, installa il notificatore desktop e richiama il modulo sessione per lo switch verso Gamescope e il fallback. |
+| **[`gamescope`](docs/modules/gamescope.md)** | [`lib/modules/gamescope.sh`](lib/modules/gamescope.sh) | Prepara Gamescope come modalità opzionale, rileva le modalità esposte da DRM e supporta override; installa lo shim `libps5-drm-8bpc.so`, `cap_sys_nice`, diagnostica della pipeline video e verifica/riparazione di file Steam. La modalità effettiva resta vincolata ai modi DRM e alla configurazione di boot. |
+| **[`session`](docs/modules/session.md)** | [`lib/modules/session.sh`](lib/modules/session.sh) | Supervisore di `tty1`: KDE Plasma è la sessione predefinita; Gamescope si avvia su richiesta, dopo il controllo di disponibilità DRM, e torna a KDE in caso di timeout o uscita anomala. |
+| **[`system`](docs/modules/system.md)** | [`lib/modules/system.sh`](lib/modules/system.sh) | Applica una baseline kernel `video=DP-1:1920x1080@60`, abilita la riparazione filesystem al boot, configura `fstab` per root ext4 e boot FAT, sudo per `%wheel`, journal persistente e snapshot diagnostici. La forzatura 1080p è un workaround di avvio e condiziona i modi effettivamente esposti a Gamescope. |
 
 ---
 
 ## 🌟 Funzionalità Principali Approfondite
 
-### 1. Avvio Automatico Gamescope & Fallback Resiliente KDE Plasma
+### 1. KDE Plasma predefinito & Gamescope con Fallback Resiliente
 
-Il modulo `session` implementa un'architettura di supervisione per garantire che la console si avvii sempre in modalità gaming senza mai lasciare l'utente davanti a uno schermo nero in caso di imprevisti:
+Il modulo `session` installa un supervisore su `tty1` e imposta KDE Plasma come sessione predefinita. Gamescope è opzionale: quando viene selezionato, il supervisore aspetta che `/dev/dri/card0` sia disponibile e che un connettore DRM risulti collegato con una modalità valida e stabile. Il timeout predefinito è 30 secondi; scaduto il tempo, o in caso di uscita anomala di Gamescope, viene avviato KDE Plasma.
 
 ```text
-                      [ Avvio PS5 / Autologin tty1 ]
-                                    │
-                                    ▼
-                     [ Lettura ps5-next-session ]
-                                    │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-            [ "gamescope" ]                  [ "desktop" ]
-                    │                               │
-                    ▼                               ▼
-       [ gamescope-session-ps5 ]          [ KDE Plasma Wayland ]
-         - Auto-detect DRM (4K/1080p)
-         - Rilevamento SteamDeck manifest
-         - Attesa connettività DHCP
-                    │
-         ┌──────────┴──────────┐
-         ▼                     ▼
-   [ Exit == 0 ]         [ Errore / Crash ]
-   (Uptime ≥ 20s)        (Exit != 0 o Uptime < 20s)
-         │                     │
-         ▼                     ▼
-   [ Sessione OK ]     [ FALLBACK AUTOMATICO KDE ]
-   (Gamescope attivo)    - Allinea XDG_CURRENT_DESKTOP=KDE
-                         - Resetta portali D-Bus
-                         - Avvia Plasma Wayland su tty1
-                         - Mostra alert e scrive fallback.log
+                   [ Avvio PS5 / autologin tty1 ]
+                                  |
+                                  v
+                 [ Lettura ps5-next-session ]
+                 [ default: "desktop" ]
+                         /             \
+                        v               v
+                [ "desktop" ]     [ "gamescope" ]
+                        |               |
+                        v               v
+                 [ KDE Plasma ]  [ Attesa device DRM ]
+                                        |
+                              +---------+---------+
+                              |                   |
+                         [ DRM pronto ]      [ Timeout ]
+                              |                   |
+                              v                   v
+                         [ Gamescope ]      [ Fallback KDE ]
+                              |
+                       [ Uscita anomala ]
+                              |
+                              v
+                        [ Fallback KDE ]
 ```
 
-- **Passaggio Volontario Desktop $\leftrightarrow$ Gaming Mode**: Tramite il comando standard SteamOS `/usr/bin/steamos-session-select desktop` (o cliccando "Passa al Desktop" nei menu di Steam), il sistema chiude Gamescope e apre KDE Plasma. Dal desktop, cliccando su "Torna a Gaming Mode", il sistema reimposta la sessione su Gamescope e riavvia l'interfaccia a schermo intero.
+- **Cambio volontario Desktop ↔ Gaming Mode**: dalla sessione desktop è possibile richiedere Gamescope con `steamos-session-select gamescope`; per tornare a KDE si usa `steamos-session-select desktop`. Il supervisore pulisce l'ambiente della sessione precedente e registra i passaggi nei log. Il fallback automatico a KDE interviene anche quando Gamescope termina in modo anomalo.
 
 ---
 
 ### 2. Raffreddamento Dinamico Continuo a 12 Zone ("Ultra-Silent Continuous 1°C")
 
-Il demone `ps5-fan-daemon` gestisce la ventola tramite il controller hardware PS5 con interpolazione continua al singolo grado (`1°C`), filtro anti-spike, deadband asimmetrica di 2°C per evitare oscillazioni e limitatore di discesa termica (*anti-heat-soak*) per smaltire dolcemente il calore dopo le sessioni di gioco.
+Il demone `ps5-fan-daemon` usa il sensore hwmon con la temperatura più alta disponibile e calcola un target continuo al singolo grado (`1°C`), con isteresi di 2°C e limitatore di discesa graduale (*anti-heat-soak*). Scrive il target nel controller PS5 quando esposto e usa il PWM hwmon come percorso alternativo. Le percentuali nella tabella sono stime del profilo, non misure garantite degli RPM: verifica sempre temperatura e risposta effettive sulla tua console.
 
-| Zona | Temp. Rilevata APU/GPU | Target Servo Continuo | Regime Ventola Stimato | Fallback PWM (`45-255`) | Scenario d'Uso Tipico |
+| Zona | Temperatura hwmon più alta letta | Target Servo Continuo | Regime Ventola Stimato | Fallback PWM (`45-255`) | Scenario d'Uso Tipico |
 | :---: | :---: | :---: | :---: | :---: | :--- |
 | **1. Deep Idle** | $\le 38^\circ\text{C}$ | `65 °C` | **~18% - 20% (Minimo Fisico)** | `45` | Console appena accesa / Schermo in standby |
 | **2. Ultra-Silent** | $39^\circ\text{C} - 42^\circ\text{C}$ | `64 → 62 °C` | **~21% - 25% (Inudibile)** | `50 → 62` | Desktop KDE inattivo / Home di Gamescope |
@@ -146,17 +144,18 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ### 3. Rete, Sincronizzazione Orologio RTC/TLS e Wi-Fi
 
-- **Risoluzione perdita orologio (CMOS / RTC reset)**: Su PS5 l'assenza di un RTC tradizionale fa ripartire l'orologio all'epoca 1970/2024 a ogni spegnimento, invalidando i certificati HTTPS e bloccando il bootstrap di Steam. Il modulo `ethernet` integra:
-  - `ps5-clock-epoch`: imposta una data minima coerente prima dell'avvio della rete;
-  - Dispatcher NetworkManager (`10-ps5-time-sync.sh`): non appena la scheda di rete acquisisce connettività, estrae l'ora esatta via HTTP (`client-update.steamstatic.com`, `cloudflare.com`) e allinea immediatamente `systemd-timesyncd`.
-- **Risoluzione Doppio Controller Bluetooth**: Sui SoC Oberon compaiono due interfacce Bluetooth, di cui una fantasma con MAC `00:00:00:00:00:00`. Il servizio `ps5-bt-quiet.service` interroga i controller tramite `btmgmt` e disattiva selettivamente l'interfaccia fantasma, attivando solo il controller reale.
+- **Sincronizzazione orologio / TLS**: il modulo `ethernet` prepara i file di stato dell'orologio (`/usr/lib/clock-epoch` e `/var/lib/systemd/timesync/clock`), configura `systemd-timesyncd` e i server NTP e installa un dispatcher NetworkManager che forza un tentativo di sincronizzazione quando la connessione sale. Se NTP non riesce, prova a ricavare l'ora dall'header HTTP `Date`. Il recupero dipende dalla disponibilità della rete e dei server raggiungibili.
+
+- **Wi-Fi interno e dongle USB**: il modulo `wifi` rileva il percorso hardware e mette in staging il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e` considerato instabile per il target e non tratta il chip MediaTek come se fosse il NXP IW620; il supporto ai dongle USB viene preservato. La presenza del firmware richiesto rimane una precondizione per caricare il driver NXP.
+
+- **Doppio controller Bluetooth**: il modulo `bluetooth` installa un servizio firmware e `ps5-bt-quiet`, che esamina i controller esposti dal kernel e tenta di disattivare l'interfaccia fantasma e attivare quella valida quando può distinguerle.
 
 ---
 
 ### 4. Integrità Filesystem & Centro Diagnostico (`ps5-diag`)
 
 - **Riparazione Dirty Bit FAT32 (`/boot/efi`)**: Previene il warning kernel `Volume was not properly unmounted. Some data may be corrupt`. All'esecuzione del patcher da PC, `disk_check_boot_fat` esegue `fsck.fat -a` sulla partizione di boot; inoltre in `/etc/fstab` vengono aggiunti i flag `flush,errors=remount-ro` che scrivono immediatamente le tabelle FAT su memoria flash.
-- **Snapshot Diagnostici Consolidati**: Tutti i log di sistema vengono raccolti ordinatamente in `/boot/efi/ps5-diag/` (visibile e consultabile collegando la chiavetta al PC):
+- **Snapshot Diagnostici Consolidati**: i dump sono salvati in `/boot/efi/ps5-diag/` quando la partizione di boot è montata; se non è disponibile, lo snapshot di sistema usa `/var/log/ps5-diag/`. Quando i file risiedono nella partizione di boot, sono consultabili collegando il supporto al PC:
 
 | File Diagnostico | Descrizione del Contenuto | Tempistica di Raccolta |
 | :--- | :--- | :--- |
@@ -170,21 +169,21 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ## 🔍 Risoluzione dei Problemi Comuni (Troubleshooting)
 
-### 1. Il sistema si avvia in KDE Desktop invece che in Gamescope Mode
-- Controlla il file di alert creato in `~/.config/ps5-steam-firstboot-alert.txt` o il registro `~/.gamescope-fallback.log`.
-- Se era il primissimo avvio di Steam e non c'era connessione internet attiva, connetti la console via cavo ethernet o configura il Wi-Fi da KDE Plasma, quindi clicca sull'icona **"Torna a Gamescope Mode"** sul desktop.
-- Verifica con `ps5-temp` che l'hardware risponda regolarmente.
+### 1. Avvio di Gamescope e ritorno a KDE
+- **KDE Plasma è il comportamento predefinito previsto**, non un errore. Per richiedere Gamescope, usa `steamos-session-select gamescope` dalla sessione desktop.
+- Se Gamescope non parte o ritorna a KDE, controlla `~/.gamescope-session.log`, `~/.gamescope-fallback.log` e l'eventuale alert `~/.config/ps5-steam-firstboot-alert.txt`.
+- Per tornare manualmente al desktop, usa `steamos-session-select desktop`. Verifica anche lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
 
 ### 2. Risoluzione TV/Monitor e Schermo Nero ("Nessun segnale")
-- **Stabilizzazione Bridge HDMI Panasonic MN864739**: La PS5 instrada internamente il segnale video dalla GPU Oberon a un chip bridge Panasonic DP-to-HDMI. Per evitare che all'avvio a freddo (*cold boot*) il bridge fallisca l'addestramento del link TMDS sui display 4K (che a 594 MHz genera schermo nero o bianco), il modulo `system` configura `video=DP-1:1920x1080@60` in `cmdline.txt`. Questo garantisce un pixel clock stabile a 148.5 MHz al momento dell'accensione.
-- **Enforcement 8bpc / 24bpp**: Sia **KDE Plasma Wayland** (tramite `KWIN_DRM_PREFER_COLOR_DEPTH=24`) sia **Gamescope** (tramite l'intercettore `libps5-drm-8bpc.so`) operano rigorosamente in formato a 8 bit (`DRM_FORMAT_XRGB8888`), evitando i FourCC a 10 bit incompatibili col bridge Panasonic.
+- **Baseline di avvio per il bridge HDMI Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` come workaround per il cold boot, riducendo la richiesta di link rispetto a 4K60. È una misura di stabilizzazione, non una garanzia universale: limita la modalità DRM esposta al boot e può condizionare la risoluzione massima effettivamente utilizzabile da KDE/Gamescope.
+- **Mitigazione dei formati DRM a 10 bit in Gamescope**: il modulo installa `libps5-drm-8bpc.so`, precaricata nel percorso Gamescope per filtrare i formati a 10 bit e favorire `DRM_FORMAT_XRGB8888`. È un workaround software per il bridge, non un'attivazione di HDR e non una garanzia di compatibilità con tutti i display.
 - **Personalizzazione Manuale (Opzionale)**: Se colleghi la PS5 a un display particolare e desideri forzare una risoluzione fissa personalizzata in Gamescope, puoi decommentare e modificare i parametri nel file `/etc/ps5-gamescope.conf`:
   ```ini
-  OUTPUT_WIDTH=1920
-  OUTPUT_HEIGHT=1080
-  NESTED_WIDTH=1920
-  NESTED_HEIGHT=1080
-  REFRESH_RATE=60
+  PS5_OUTPUT_WIDTH=1920
+  PS5_OUTPUT_HEIGHT=1080
+  PS5_NESTED_WIDTH=1920
+  PS5_NESTED_HEIGHT=1080
+  PS5_REFRESH_RATE=60
   ```
 
 ### 3. La ventola gira al massimo dei giri all'avvio
@@ -197,15 +196,15 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ---
 
-## 🎮 Avvio diretto Gamescope al cold boot
+## 🎮 Gestione della sessione grafica al cold boot
 
-La sessione predefinita avvia Gamescope direttamente, senza KDE come fase intermedia. Il supervisore effettua polling su `/dev/dri/card0` e sul connettore DRM, richiedendo una modalità valida e campioni stabili. Il polling attende al massimo 30 secondi per default (`PS5_SESSION_DRM_READY_TIMEOUT_SEC=30`); se il display non diventa pronto, il fallback passa a KDE senza avere avviato KDE come sessione intermedia. Impostando `PS5_SESSION_DRM_READY_TIMEOUT_SEC=0` il polling resta illimitato.
+L'avvio predefinito configurato da `session` e `cleanup` è KDE Plasma Desktop. Gamescope viene avviato solo quando è richiesto tramite `steamos-session-select gamescope`. In quel percorso il supervisore esegue il polling di `/dev/dri/card0` e dei connettori DRM, richiedendo un connettore collegato, una modalità valida e tre campioni stabili. Il timeout predefinito è di 30 secondi (`PS5_SESSION_DRM_READY_TIMEOUT_SEC=30`); allo scadere, Gamescope non viene avviato e il supervisore passa a KDE. Impostando `PS5_SESSION_DRM_READY_TIMEOUT_SEC=0` l'attesa è illimitata: usalo solo per test controllati, perché il fallback dovuto al timeout non interverrà.
 
-L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/analysis/ANALISI-FUNZIONALE-REFACTOR.md), con l'architettura dettagliata della catena video e la roadmap evolutiva descritte in [PS5-DISPLAY-PIPELINE.md](docs/PS5-DISPLAY-PIPELINE.md).
+L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/analysis/ANALISI-FUNZIONALE-REFACTOR.md), con l'architettura della catena video e le aree di evoluzione descritte in [PS5-DISPLAY-PIPELINE.md](docs/PS5-DISPLAY-PIPELINE.md).
 
 ## 🧪 Suite di Test Automatizzata (Hardware-Free)
 
-Il progetto è accompagnato da una suite di test completa eseguibile in sandbox temporanea senza necessitare dell'hardware PS5:
+Il progetto include una suite di test automatizzati eseguibile in sandbox temporanea senza necessitare dell'hardware PS5. La CI GitHub controlla la sintassi degli script con `bash -n` e avvia poi la suite; questi test non sostituiscono una verifica pratica sulla combinazione specifica di PS5, kernel e display:
 
 ```bash
 bash tests/run-all-tests.sh
@@ -215,7 +214,7 @@ I test convalidano:
 - Sintassi di tutti gli script bash e shell generati (`bash -n` / `sh -n`);
 - Idempotenza (applicazione multipla senza duplicazione di righe o configurazioni);
 - Funzionamento isolato dei moduli VRAM, Ethernet, Wi-Fi, Fan, KDE, Gamescope, Session, System e Cleanup;
-- Auto-rilevamento dinamico DRM della risoluzione e rimozione parametri video hardcoded da `cmdline.txt`;
+- Auto-rilevamento delle modalità DRM usate da Gamescope e verifica della configurazione video in `cmdline.txt`, inclusa la baseline 1080p60 prevista dal modulo `system`;
 - Simulazione di crash e attivazione del fallback automatico da Gamescope a KDE;
 - Pulizia dei file diagnostici legacy e generazione corretta delle unit systemd.
 
@@ -224,7 +223,7 @@ I test convalidano:
 ## 📋 Requisiti di Sistema
 - **Console Target**: Sony PlayStation 5 (Fat / Slim, Digital o con lettore Blu-ray, predisposta autonomamente dall'utente per l'avvio di kernel Linux).
 - **Storage**: Disco SSD NVMe interno, SSD esterno USB 3.0 o chiavetta USB con installazione CachyOS x86_64 predisposta autonomamente dall'utente.
-- **PC Host di Patching**: Qualsiasi distribuzione Linux con `bash`, `coreutils`, `e2fsprogs` (`e2fsck`), `dosfstools` (`fsck.fat`) e privilegi di `sudo`.
+- **PC Host di Patching**: Qualsiasi distribuzione Linux con `bash`, `coreutils`, `util-linux` (`lsblk`, `findmnt`, `blkid`), `e2fsprogs` (`e2fsck`), `dosfstools` (`fsck.fat`) e privilegi di `sudo`. Le partizioni della destinazione devono essere accessibili e montate in mount point riconoscibili dallo script.
 
 ---
 
