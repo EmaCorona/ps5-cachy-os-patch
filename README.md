@@ -81,6 +81,10 @@ Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
 | **[`session`](docs/modules/session.md)** | [`lib/modules/session.sh`](lib/modules/session.sh) | Supervisore di `tty1`: KDE Plasma è la sessione predefinita; Gamescope si avvia su richiesta, dopo il controllo di disponibilità DRM, e torna a KDE in caso di timeout o uscita anomala. |
 | **[`system`](docs/modules/system.md)** | [`lib/modules/system.sh`](lib/modules/system.sh) | Applica una baseline kernel `video=DP-1:1920x1080@60`, abilita la riparazione filesystem al boot, configura `fstab` per root ext4 e boot FAT, sudo per `%wheel`, journal persistente e snapshot diagnostici. La forzatura 1080p è un workaround di avvio e condiziona i modi effettivamente esposti a Gamescope. |
 
+### 📚 Storico delle correzioni
+
+Per ricostruire il problema, la causa tecnica e la soluzione introdotta da ciascun commit di correzione documentato, consulta l'[indice dello storico dei fix](docs/fix/README.md). Ogni scheda rimanda allo SHA originale e descrive i file coinvolti e i limiti delle verifiche.
+
 ---
 
 ## 🌟 Funzionalità Principali Approfondite
