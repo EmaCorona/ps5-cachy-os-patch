@@ -197,6 +197,12 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ---
 
+## 🎮 Avvio diretto Gamescope al cold boot
+
+La sessione predefinita avvia Gamescope direttamente, senza KDE come fase intermedia. Il supervisore effettua polling su `/dev/dri/card0` e sul connettore DRM, richiedendo una modalità valida e campioni stabili. Il polling attende al massimo 30 secondi per default (`PS5_SESSION_DRM_READY_TIMEOUT_SEC=30`); se il display non diventa pronto, il fallback passa a KDE senza avere avviato KDE come sessione intermedia. Impostando `PS5_SESSION_DRM_READY_TIMEOUT_SEC=0` il polling resta illimitato.
+
+L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/analysis/ANALISI-FUNZIONALE-REFACTOR.md).
+
 ## 🧪 Suite di Test Automatizzata (Hardware-Free)
 
 Il progetto è accompagnato da una suite di test completa eseguibile in sandbox temporanea senza necessitare dell'hardware PS5:

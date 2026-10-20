@@ -17,9 +17,9 @@ detect_mounts() {
         BOOT_MNT=""
     fi
 
-    # Rilevamento tramite lsblk
+    # Rilevamento tramite lsblk (escludendo i mount di sistema dell'host come / o /boot)
     if [ -z "$CACHY_MNT" ] || [ -z "$BOOT_MNT" ]; then
-        for m in $(lsblk -rno MOUNTPOINTS 2>/dev/null | grep -v '^$'); do
+        for m in $(lsblk -rno MOUNTPOINTS 2>/dev/null | grep -E '^/(run/media|media|mnt)/'); do
             if [ -z "$CACHY_MNT" ] && [ -d "$m/etc" ] && [ -d "$m/usr" ]; then
                 CACHY_MNT="$m"
             fi
@@ -29,9 +29,9 @@ detect_mounts() {
         done
     fi
 
-    # Fallback su directory tipiche di automount (/run/media o /media)
+    # Fallback su directory tipiche di automount (/run/media o /media, inclusi suffissi cachyos1/boot1)
     if [ -z "$CACHY_MNT" ]; then
-        for d in /run/media/*/cachyos /media/*/cachyos /run/media/* /media/*; do
+        for d in /run/media/*/cachyos* /media/*/cachyos* /run/media/*/* /media/*/* /mnt/*; do
             if [ -d "$d/etc" ] && [ -d "$d/usr" ]; then
                 CACHY_MNT="$d"
                 break
@@ -40,7 +40,7 @@ detect_mounts() {
     fi
 
     if [ -z "$BOOT_MNT" ]; then
-        for d in /run/media/*/boot /media/*/boot /run/media/* /media/*; do
+        for d in /run/media/*/boot* /media/*/boot* /run/media/*/* /media/*/* /mnt/*; do
             if [ -f "$d/bzImage" ]; then
                 BOOT_MNT="$d"
                 break

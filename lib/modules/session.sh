@@ -4,30 +4,30 @@
 # ==============================================================================
 
 module_session_info() {
-    echo "Avvio automatico in Gamescope Mode su tty1 con fallback automatico su KDE Plasma in caso di errori"
+    echo "Avvio predefinito in KDE Plasma Desktop su tty1 con supporto e fallback per Gamescope Mode"
 }
 
 module_session_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    log_step "Modulo Session: Configurazione avvio automatico Gamescope con fallback su KDE Plasma..."
+    log_step "Modulo Session: Configurazione avvio automatico KDE Plasma con supporto a Gamescope Gaming Mode..."
 
     if [ -z "$cachy_mnt" ] || [ ! -d "$cachy_mnt" ]; then
         log_error "Root filesystem CachyOS non trovato."
         return 1
     fi
 
-    # 1. Imposta la sessione predefinita di avvio su Gamescope Gaming Mode
+    # 1. Imposta la sessione predefinita di avvio su KDE Plasma Desktop
     sudo mkdir -p "${cachy_mnt}/home/steam/.config"
-    echo "gamescope" | sudo tee "${cachy_mnt}/home/steam/.config/ps5-next-session" >/dev/null
+    echo "desktop" | sudo tee "${cachy_mnt}/home/steam/.config/ps5-next-session" >/dev/null
     sudo chown -R 1000:1000 "${cachy_mnt}/home/steam/.config" 2>/dev/null || true
     sudo chmod 0644 "${cachy_mnt}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 
-    # 2. Configura /etc/profile.d/ps5-tty-session.sh con auto-start Gamescope e fallback KDE
+    # 2. Configura /etc/profile.d/ps5-tty-session.sh con auto-start KDE e switch Gamescope
     sudo mkdir -p "${cachy_mnt}/etc/profile.d"
     cat << 'EOF' | sudo tee "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" >/dev/null
-# /etc/profile.d/ps5-tty-session.sh — tty1 autologin in Gamescope Mode con fallback automatico su KDE Plasma
+# /etc/profile.d/ps5-tty-session.sh — tty1 autologin in KDE Plasma Desktop con supporto a Gamescope Gaming Mode
 
 case ${PS5_TTY_SESSION_INIT-} in
 1) return 0 2>/dev/null || exit 0 ;;
@@ -52,26 +52,132 @@ MIN_UPTIME_SEC="${PS5_MIN_UPTIME_SEC:-20}"
 
 mkdir -p "$(dirname "$SESSION_FILE")"
 if [ -s "$SESSION_FILE" ]; then
-    read -r SESSION <"$SESSION_FILE" 2>/dev/null || SESSION=gamescope
+    read -r SESSION <"$SESSION_FILE" 2>/dev/null || SESSION=desktop
 else
-    SESSION=gamescope
+    SESSION=desktop
 fi
 SESSION=$(printf '%s' "$SESSION" | tr -d '\r\n\t ')
-[ -z "$SESSION" ] && SESSION=gamescope
+[ -z "$SESSION" ] && SESSION=desktop
 
 export LIBSEAT_BACKEND=logind
 
+_monotonic_sec() {
+    local up_file="${PS5_UPTIME_FILE:-/proc/uptime}"
+    if [ -r "$up_file" ]; then
+        awk '{print int($1)}' "$up_file" 2>/dev/null || date +%s
+    else
+        date +%s
+    fi
+}
+
+
+# Session state machine: INIT -> WAIT_DRM_READY -> START_GAMESCOPE -> HANDLE_EXIT.
+# Default timeout=30s falls back to KDE if DRM never becomes ready; timeout=0 means polling forever.
+SESSION_DRM_SYSFS_ROOT="${PS5_DRM_SYSFS_ROOT:-/sys/class/drm}"
+SESSION_DRM_DEVICE="${PS5_DRM_DEVICE:-/dev/dri/card0}"
+SESSION_DRM_POLL_INTERVAL_SEC="${PS5_SESSION_DRM_POLL_INTERVAL_SEC:-1}"
+SESSION_DRM_STABLE_SAMPLES="${PS5_SESSION_DRM_STABLE_SAMPLES:-3}"
+SESSION_DRM_READY_TIMEOUT_SEC="${PS5_SESSION_DRM_READY_TIMEOUT_SEC:-30}"
+SESSION_LOG="${PS5_SESSION_LOG:-$HOME/.gamescope-session.log}"
+
+_session_log() {
+    local msg="[$(date -Is 2>/dev/null || date)] ps5-session state=$1: $2"
+    printf '%s\n' "$msg" >>"$SESSION_LOG" 2>/dev/null || true
+}
+
+_session_drm_fingerprint() {
+    local c status mode name port fallback=""
+    [ -e "$SESSION_DRM_DEVICE" ] || return 1
+    for c in "$SESSION_DRM_SYSFS_ROOT"/card*-*; do
+        [ -r "$c/status" ] || continue
+        status=$(cat "$c/status" 2>/dev/null || true)
+        [ "$status" = "connected" ] || continue
+        [ -r "$c/modes" ] || continue
+        mode=$(head -n 1 "$c/modes" 2>/dev/null || true)
+        [[ "$mode" =~ ^[0-9]+x[0-9]+$ ]] || continue
+        name="${c##*/}"
+        port="${name#card*-}"
+        case "$port" in
+            DP-1|HDMI-A-1)
+                printf '%s|%s' "$name" "$mode"
+                return 0
+                ;;
+            *)
+                [ -n "$fallback" ] || fallback="$name|$mode"
+                ;;
+        esac
+    done
+    [ -n "$fallback" ] || return 1
+    printf '%s' "$fallback"
+}
+
+_wait_for_drm_ready() {
+    local started now elapsed fingerprint previous="" stable=0 last_report=0
+    local timeout="$SESSION_DRM_READY_TIMEOUT_SEC"
+    local required="$SESSION_DRM_STABLE_SAMPLES"
+    local poll="$SESSION_DRM_POLL_INTERVAL_SEC"
+
+    if [ "${PS5_SESSION_SKIP_DRM_WAIT:-0}" = "1" ]; then
+        _session_log "WAIT_DRM_READY" "gate bypassed explicitly for a controlled test."
+        return 0
+    fi
+    [[ "$timeout" =~ ^[0-9]+$ ]] || timeout=0
+    [[ "$required" =~ ^[1-9][0-9]*$ ]] || required=3
+    [[ "$poll" =~ ^[0-9]+([.][0-9]+)?$ ]] || poll=1
+    started=$(_monotonic_sec)
+    _session_log "WAIT_DRM_READY" "attendo device=$SESSION_DRM_DEVICE, connettore connected con mode valida e $required campioni stabili (timeout=$timeout, 0=infinito)."
+
+    while :; do
+        if [ "${PS5_SYSTEM_STOPPING:-0}" = "1" ]; then
+            _session_log "WAIT_DRM_READY" "arresto sistema richiesto; annullo l'avvio grafico."
+            return 2
+        fi
+        fingerprint=$(_session_drm_fingerprint 2>/dev/null || true)
+        if [ -n "$fingerprint" ]; then
+            if [ "$fingerprint" = "$previous" ]; then
+                stable=$((stable + 1))
+            else
+                previous="$fingerprint"
+                stable=1
+            fi
+            if [ "$stable" -ge "$required" ]; then
+                _session_log "DRM_READY" "connettore=$fingerprint; campioni_stabili=$stable."
+                return 0
+            fi
+        else
+            previous=""
+            stable=0
+        fi
+        now=$(_monotonic_sec)
+        elapsed=$((now - started))
+        if [ "$timeout" -gt 0 ] && [ "$elapsed" -ge "$timeout" ]; then
+            _session_log "DRM_TIMEOUT" "DRM non pronto dopo ${elapsed}s; Gamescope non verra' avviato."
+            return 1
+        fi
+        if [ $((now - last_report)) -ge 15 ]; then
+            _session_log "WAIT_DRM_READY" "poll in corso (${elapsed}s); fingerprint=${fingerprint:-not-ready}, stable=$stable/$required."
+            last_report=$now
+        fi
+        sleep "$poll"
+    done
+}
+
 _start_kde_plasma() {
-    # Ripristina "gamescope" per il prossimo riavvio della PS5
-    echo "gamescope" >"$SESSION_FILE" 2>/dev/null || true
+    # Mantiene la sessione su desktop
+    echo "desktop" >"$SESSION_FILE" 2>/dev/null || true
     unset WAYLAND_DISPLAY DISPLAY 2>/dev/null || true
     export XDG_SESSION_TYPE=wayland
     export XDG_CURRENT_DESKTOP=KDE
     export XDG_SESSION_DESKTOP=KDE
     export KDE_SESSION_VERSION=6
 
-    # Allinea l'ambiente di attivazione systemd/D-Bus a KDE e ferma eventuali portali
-    # residui della sessione Gamescope, così xdg-desktop-portal riparte con kde-portals.conf
+    # Termina eventuali processi residui di Gamescope/Xwayland per liberare il master DRM (/dev/dri/card0)
+    # e allinea l'ambiente di attivazione systemd/D-Bus a KDE
+    if [ "${PS5_FORCE_TTY1:-0}" != "1" ]; then
+        pkill -TERM -u "${USER:-steam}" -x gamescope 2>/dev/null || true
+        pkill -TERM -u "${USER:-steam}" -x Xwayland 2>/dev/null || true
+    fi
+
     if [ "${PS5_FORCE_TTY1:-0}" != "1" ] && command -v systemctl >/dev/null 2>&1; then
         systemctl --user stop xdg-desktop-portal.service xdg-desktop-portal-gtk.service 2>/dev/null || true
         systemctl --user import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true
@@ -98,25 +204,57 @@ case "$SESSION" in
   desktop|plasma)
     rm -f "$SWITCH_MARKER" 2>/dev/null || true
     _start_kde_plasma
+    return 0 2>/dev/null || exit 0
     ;;
   gamescope|*)
     echo "gamescope" >"$SESSION_FILE" 2>/dev/null || true
     rm -f "$SWITCH_MARKER" 2>/dev/null || true
 
-    gs_start_ts=$(date +%s)
-    if [ -x "$GAMESCOPE_BIN" ]; then
-        "$GAMESCOPE_BIN"
-        gs_exit=$?
-    else
-        gs_exit=127
-    fi
-    gs_end_ts=$(date +%s)
+    SESSION_STATE="WAIT_DRM_READY"
+    while :; do
+        case "$SESSION_STATE" in
+            WAIT_DRM_READY)
+                _wait_for_drm_ready
+                wait_rc=$?
+                case "$wait_rc" in
+                    0) SESSION_STATE="START_GAMESCOPE" ;;
+                    2) return 0 2>/dev/null || exit 0 ;;
+                    *)
+                        echo "[$(date -Is)] PS5 Session: DRM readiness timeout; fallback KDE dopo il tentativo diretto annullato." >>"$FALLBACK_LOG"
+                        SESSION_STATE="FALLBACK_KDE"
+                        ;;
+                esac
+                ;;
+            START_GAMESCOPE)
+                _session_log "START_GAMESCOPE" "avvio diretto di $GAMESCOPE_BIN; nessun bootstrap KDE."
+                gs_start_ts=$(_monotonic_sec)
+                if [ -x "$GAMESCOPE_BIN" ]; then
+                    "$GAMESCOPE_BIN"
+                    gs_exit=$?
+                else
+                    gs_exit=127
+                fi
+                SESSION_STATE="HANDLE_EXIT"
+                break
+                ;;
+            FALLBACK_KDE)
+                _session_log "FALLBACK_KDE" "fallback di recupero dopo timeout DRM; KDE non e' stato avviato prima di Gamescope."
+                _start_kde_plasma
+                return 0 2>/dev/null || exit 0
+                ;;
+        esac
+    done
+    gs_end_ts=$(_monotonic_sec)
     gs_duration=$((gs_end_ts - gs_start_ts))
+    [ "$gs_duration" -lt 0 ] && gs_duration=0
 
     # Se il sistema si sta spegnendo o riavviando, esci pulitamente senza fallback
+    if [ "${PS5_SYSTEM_STOPPING:-0}" = "1" ]; then
+        return 0 2>/dev/null || exit 0
+    fi
     if command -v systemctl >/dev/null 2>&1 && [ "${PS5_FORCE_TTY1:-0}" != "1" ]; then
         sys_state=$(systemctl is-system-running 2>/dev/null || echo "running")
-        if [ "$sys_state" = "stopping" ]; then
+        if [ "$sys_state" = "stopping" ] || systemctl list-jobs 2>/dev/null | grep -qE 'shutdown\.target|reboot\.target|poweroff\.target|halt\.target'; then
             return 0 2>/dev/null || exit 0
         fi
     fi
@@ -127,16 +265,17 @@ case "$SESSION" in
     next_req=$(printf '%s' "$next_req" | tr -d '\r\n\t ')
 
     # Caso 1: Switch volontario al Desktop richiesto dall'utente ("Passa al Desktop")
-    if [ -f "$SWITCH_MARKER" ] || { [ "$gs_exit" -eq 0 ] && { [ "$next_req" = "desktop" ] || [ "$next_req" = "plasma" ]; }; }; then
+    if [ -f "$SWITCH_MARKER" ] || [ "$next_req" = "desktop" ] || [ "$next_req" = "plasma" ]; then
         rm -f "$SWITCH_MARKER" 2>/dev/null || true
         echo "[$(date -Is)] PS5 Session: Passaggio volontario da Gamescope a KDE Plasma Desktop." >>"$FALLBACK_LOG"
         _start_kde_plasma
-    # Caso 2: Errore di caricamento di Gamescope (exit != 0 oppure crash rapido < MIN_UPTIME_SEC)
-    elif [ "$gs_exit" -ne 0 ] || [ "$gs_duration" -lt "$MIN_UPTIME_SEC" ]; then
-        echo "[$(date -Is)] PS5 Session FALLBACK: Gamescope terminato con errore (exit=${gs_exit}, durata=${gs_duration}s). Avvio automatico di KDE Plasma." >>"$FALLBACK_LOG"
+    # Caso 2: Qualsiasi uscita non-shutdown di Gamescope senza switch volontario attiva SEMPRE il fallback a KDE Plasma
+    # (elimina la zona morta quando steam.sh maschera un crash con exit=0 o quando NTP avanza l'orologio di sistema)
+    else
+        echo "[$(date -Is)] PS5 Session FALLBACK: Gamescope terminato con errore o chiusura anomala (exit=${gs_exit}, durata=${gs_duration}s). Avvio automatico di KDE Plasma." >>"$FALLBACK_LOG"
         if [ ! -f "$ALERT_FILE" ]; then
             cat << ALERT_EOF >"$ALERT_FILE"
-AVVISO FALLBACK AUTOMATICO: L'interfaccia Gamescope Gaming Mode ha riscontrato un errore durante il caricamento (codice uscita: ${gs_exit}, durata: ${gs_duration}s).
+AVVISO FALLBACK AUTOMATICO: L'interfaccia Gamescope Gaming Mode ha riscontrato un errore o si è chiusa in modo anomalo (codice uscita: ${gs_exit}, durata: ${gs_duration}s).
 Il sistema ha attivato automaticamente la modalità di emergenza KDE Plasma Desktop.
 Puoi consultare i dettagli in ~/.gamescope.log e ~/.gamescope-fallback.log.
 ALERT_EOF
@@ -188,7 +327,32 @@ EOF
         sudo chmod 0755 "${cachy_mnt}/usr/bin/steamos-session-select"
     fi
 
-    log_success "Modulo Session configurato con successo (Auto-Gamescope + Fallback KDE Plasma)."
+    # 4. Configura guardia secondaria in /home/steam/.bash_profile contro schermo nero su tty1
+    sudo mkdir -p "${cachy_mnt}/home/steam"
+    cat << 'EOF' | sudo tee "${cachy_mnt}/home/steam/.bash_profile" >/dev/null
+# Login shells: /etc/profile sources profile.d first; keep .bashrc for interactive tools.
+[ -f ~/.bashrc ] && . ~/.bashrc
+
+# Guardia secondaria anti-schermo-nero su tty1: se ps5-tty-session.sh termina senza avviare KDE
+# e il sistema non si sta spegnendo/riavviando, avvia automaticamente KDE Plasma Wayland.
+if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "${WAYLAND_DISPLAY-}" ] && [ -z "${DISPLAY-}" ]; then
+    sys_state=$(systemctl is-system-running 2>/dev/null || echo "running")
+    if [ "$sys_state" != "stopping" ] && ! systemctl list-jobs 2>/dev/null | grep -qE 'shutdown\.target|reboot\.target|poweroff\.target|halt\.target'; then
+        echo "[$(date -Is)] PS5 bash_profile FALLBACK: Avvio di emergenza KDE Plasma su tty1." >> "$HOME/.gamescope-fallback.log"
+        echo "desktop" > "$HOME/.config/ps5-next-session" 2>/dev/null || true
+        export LIBSEAT_BACKEND=logind XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_SESSION_VERSION=6
+        if [ -x /usr/lib/plasma-dbus-run-session-if-needed ]; then
+            /usr/lib/plasma-dbus-run-session-if-needed /usr/bin/startplasma-wayland
+        else
+            /usr/bin/startplasma-wayland
+        fi
+    fi
+fi
+EOF
+    sudo chown 1000:1000 "${cachy_mnt}/home/steam/.bash_profile" 2>/dev/null || true
+    sudo chmod 0644 "${cachy_mnt}/home/steam/.bash_profile" 2>/dev/null || true
+
+    log_success "Modulo Session configurato con successo (Default KDE Plasma + Gamescope Mode)."
     return 0
 }
 
@@ -199,10 +363,10 @@ module_session_check() {
     if [ -f "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" ] && \
        grep -q "PS5 Session FALLBACK" "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" && \
        [ -f "${cachy_mnt}/home/steam/.config/ps5-next-session" ] && \
-       grep -q "gamescope" "${cachy_mnt}/home/steam/.config/ps5-next-session"; then
-        log_success "Auto-Gamescope con fallback KDE Plasma attivo in ps5-tty-session.sh."
+       grep -qE "desktop|plasma|gamescope" "${cachy_mnt}/home/steam/.config/ps5-next-session"; then
+        log_success "Gestione sessione (KDE Desktop predefinito e switch Gamescope) attiva in ps5-tty-session.sh."
         return 0
     fi
-    log_warn "Configurazione sessione Auto-Gamescope/Fallback incompleta."
+    log_warn "Configurazione sessione incompleta."
     return 1
 }

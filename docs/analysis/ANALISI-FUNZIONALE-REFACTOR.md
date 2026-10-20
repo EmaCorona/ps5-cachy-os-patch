@@ -129,3 +129,75 @@ La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`m
 11. **Modulo System & Diagnostica:** Sudoers wheel senza password, journal persistente, soppressione coredump pesanti, ottimizzazione fstab con flag `flush` per FAT32 boot, aggiunta parametri auto-riparazione `fsck.mode=auto fsck.repair=yes` in `cmdline.txt`, rimozione servizio legacy `ps5-boot-diag` e consolidamento snapshot in `/boot/efi/ps5-diag/`.
 12. **Idempotenza:** Applicazione ripetuta dell'intera pipeline senza duplicazioni di righe o impostazioni corrotte.
 13. **CLI Orchestration & Script di Emergenza:** Verifica di `--help`, `--list-modules`, esecuzione isolata `--module <nome>`, esecuzione end-to-end master patch e `fix_ps5_boot.sh`.
+
+
+---
+
+# 5. Analisi funzionale: avvio diretto Gamescope con polling DRM a macchina a stati
+
+## 5.1 Requisito e sintomo
+
+Il cold boot deve avviare Gamescope come prima sessione grafica. KDE Plasma non deve essere avviato né visualizzato per preparare il display. KDE resta disponibile solo quando l'utente sceglie esplicitamente la sessione Desktop o quando il tentativo diretto Gamescope fallisce / un timeout DRM esplicitamente configurato porta al recupero.
+
+Il sintomo osservato (KDE → Gamescope funziona, lancio diretto no) è compatibile con una race di inizializzazione DRM/KMS o dell'handshake del bridge DisplayPort-HDMI. Il fatto che la grafica parta dopo KDE indica una possibile dipendenza da uno stato video inizializzato durante il modeset di KWin, ma non ne prova la causa. La fix evita quindi un timer fisso e attende condizioni osservabili prima di lanciare Gamescope.
+
+## 5.2 Punti d'intervento
+
+- `lib/modules/session.sh` genera `/etc/profile.d/ps5-tty-session.sh`, supervisore della sessione utente su tty1. È il punto corretto per modellare le transizioni ed evitare l'avvio prematuro.
+- `lib/modules/gamescope.sh` genera `/usr/bin/gamescope-session-ps5`. In precedenza `ps5-drm-setup` veniva eseguito prima della scansione dei connettori; il wrapper ora applica `max bpc=8` solo dopo aver individuato una modalità valida.
+- `lib/modules/kde.sh` non viene modificato. Il nuovo percorso Gamescope non usa KDE come bootstrap.
+- Un connettore `connected` da solo non prova che il segnale fisico sia già attivo. Prima del compositor, `enabled` può non essere ancora attivo; il gate controlla quindi il device DRM, lo stato connected e una modalità valida/stabile.
+
+## 5.3 Macchina a stati
+
+```text
+INIT
+  |
+  v
+WAIT_DRM_READY  -- campione assente/instabile --> WAIT_DRM_READY
+  |
+  | device DRM presente + connettore connected + modalità valida
+  | identici per N campioni consecutivi
+  v
+DRM_READY
+  |
+  v
+START_GAMESCOPE
+  |
+  v
+HANDLE_EXIT
+  | uscita anomala / switch Desktop richiesto
+  v
+FALLBACK_KDE (solo dopo il tentativo diretto, mai come sessione intermedia)
+```
+
+Il default `PS5_SESSION_DRM_READY_TIMEOUT_SEC=30` consente il polling per 30 secondi. Se DRM non diventa pronto entro il limite, Gamescope non viene lanciato alla cieca e viene attivato il percorso di recupero KDE. Impostare `PS5_SESSION_DRM_READY_TIMEOUT_SEC=0` disabilita il timeout e mantiene il polling indefinito. Un arresto sistema interrompe il polling senza aprire una sessione grafica.
+
+Parametri:
+- `PS5_DRM_SYSFS_ROOT`: root sysfs DRM (default `/sys/class/drm`).
+- `PS5_DRM_DEVICE`: device DRM richiesto prima del lancio (default `/dev/dri/card0`).
+- `PS5_SESSION_DRM_POLL_INTERVAL_SEC`: intervallo (default 1 secondo).
+- `PS5_SESSION_DRM_STABLE_SAMPLES`: campioni identici consecutivi (default 3).
+- `PS5_SESSION_DRM_READY_TIMEOUT_SEC`: timeout in secondi, default 30; valore 0 = infinito.
+- `PS5_SESSION_LOG`: log transizioni (default `~/.gamescope-session.log`).
+
+## 5.4 Correzione nel wrapper Gamescope
+
+Le configurazioni di sistema e utente vengono lette prima della scansione DRM. `ps5-drm-setup` viene eseguito dopo che il wrapper ha trovato una modalità valida, invece che all'inizio del processo. La macchina a stati attende la stabilità e il wrapper mantiene una seconda verifica locale.
+
+## 5.5 Test e limiti
+
+La suite hardware-free estesa verifica la generazione della macchina a stati, il polling su sysfs simulato, l'ordine tra readiness e lancio Gamescope, il timeout configurabile e l'ordine del setup DRM. I test simulati non possono provare il modeset fisico della PS5: se il gate passa ma resta lo schermo nero, vanno distinti problemi di readiness da errori di presentazione/scanout usando `~/.gamescope-session.log`, `~/.gamescope.log` e `/var/log/ps5-drm-setup.log`.
+
+---
+
+## 15. Risoluzione Definitiva: Intercettore KMS 8bpc (`libps5-drm-8bpc.so`) e Link Priming Atomico
+
+### 15.1 Causa Radice: Saturazione TMDS HDMI 2.0 (10bpc XR30 vs 8bpc XR24)
+Dall'ispezione comparativa tra KDE Plasma e Gamescope è emerso che KDE funzionava perché KWin applicava `KWIN_DRM_PREFER_COLOR_DEPTH=24`, imponendo l'uso di `DRM_FORMAT_XRGB8888` (24bpp / 8bpc). A 4K 60Hz (`3840x2160@60Hz`), un segnale a 8bpc genera un pixel clock TMDS di **594 MHz** ($\le 600$ MHz, limite fisico dello standard HDMI 2.0 sul bridge Panasonic MN864739).
+Gamescope all'avvio a freddo ignora le variabili di KWin e la proprietà connettore `max bpc=8`, selezionando incondizionatamente in `src/Backends/DRMBackend.cpp:1640` il formato a 10 bit `DRM_FORMAT_XRGB2101010` (`XR30`). A 4K60, 10bpc richiede **742.5 MHz** di TMDS clock, saturando la banda del bridge e provocando schermo nero a fronte di audio e controller perfettamente funzionanti.
+
+### 15.2 Architettura Correttiva
+1. **Compilazione ed Iniezione di `libps5-drm-8bpc.so`:** Intercettore C leggero compilato in `/usr/local/lib/` e caricato via `LD_PRELOAD` esclusivamente per Gamescope. Intercetta `drmModeGetPlane` per rimuovere i FourCC a 10 bit (`XR30`, `AR30`, `XB30`, `AB30`) e `drmGetCap` per azzerare `DRM_CAP_ADDFB2_MODIFIERS`. Gamescope ripiega nativamente su `DRM_FORMAT_XRGB8888` (24bpp / 8bpc a 594 MHz).
+2. **Link Priming atomico con `modetest`:** Prima del lancio di Gamescope, esegue un modeset a 24bpp (`XR24`) di 100ms con rilascio master (`-d`) per sincronizzare il PLL del bridge Panasonic prima del compositing.
+3. **Isolamento dell'Ambiente Steam:** Disattivazione di `LD_PRELOAD` (`unset LD_PRELOAD`) nel subshell di esecuzione di `/usr/bin/steam`, garantendo integrità a Steam e ai giochi Proton.

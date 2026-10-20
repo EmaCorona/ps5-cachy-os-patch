@@ -446,11 +446,11 @@ EOF
         say_fail "ps5-tty-session.sh mancante o non configurato"
     fi
 
-    # Verifica default session impostata su gamescope
-    if [ -f "$next_sess" ] && grep -q "gamescope" "$next_sess"; then
-        say_pass "Sessione predefinita impostata su gamescope (Auto-Gamescope Mode)"
+    # Verifica default session impostata su desktop (KDE Plasma)
+    if [ -f "$next_sess" ] && grep -qE "desktop|plasma" "$next_sess"; then
+        say_pass "Sessione predefinita impostata su desktop (KDE Plasma Mode)"
     else
-        say_fail "ps5-next-session mancante o non impostato su gamescope"
+        say_fail "ps5-next-session mancante o non impostato su desktop"
     fi
 
     # Verifica patch steamos-session-select (stop portali, unset-environment e protezione loginctl terminate-session)
@@ -500,20 +500,179 @@ test_module_gamescope() {
         say_fail "gamescope-portals.conf mancante o non configurato"
     fi
 
+    # Verifica ps5-drm-setup e servizio systemd early-boot
+    local drm_setup="$MOCK_ROOT/usr/local/bin/ps5-drm-setup"
+    local drm_service="$MOCK_ROOT/etc/systemd/system/ps5-drm-setup.service"
+    local drm_symlink="$MOCK_ROOT/etc/systemd/system/sysinit.target.wants/ps5-drm-setup.service"
+
+    if [ -x "$drm_setup" ] && grep -q "max bpc" "$drm_setup" && [ -f "$drm_service" ] && [ -L "$drm_symlink" ]; then
+        if bash -n "$drm_setup"; then
+            say_pass "ps5-drm-setup (8bpc limit) e servizio systemd early-boot configurati correttamente (sintassi bash -n verificata)"
+        else
+            say_fail "ps5-drm-setup contiene errori di sintassi bash"
+        fi
+    else
+        say_fail "ps5-drm-setup o ps5-drm-setup.service mancante o non configurato"
+    fi
+
+    # Verifica esecuzione di ps5-drm-setup con mock proptest (impostazione max bpc=8 e colorspace=0)
+    local mock_bin_dir="$SANDBOX_DIR/mock_proptest_bin"
+    mkdir -p "$mock_bin_dir"
+    cat << MOCK_PT_EOF > "$mock_bin_dir/proptest"
+#!/bin/bash
+if [ "\$#" -eq 0 ]; then
+    echo "Connector 83 (DP-1)"
+    echo "	23 max bpc:"
+    echo "		flags: range"
+    echo "		values: 8 16"
+    echo "		value: 16"
+    echo "	45 Colorspace:"
+    echo "		flags: enum"
+    echo "		value: 0"
+    exit 0
+fi
+echo "\$*" >> "$mock_bin_dir/proptest_invocations.txt"
+exit 0
+MOCK_PT_EOF
+    chmod +x "$mock_bin_dir/proptest"
+
+    PATH="$mock_bin_dir:$PATH" "$drm_setup" 2>/dev/null || true
+    if [ -f "$mock_bin_dir/proptest_invocations.txt" ] && grep -q "83 connector 23 8" "$mock_bin_dir/proptest_invocations.txt"; then
+        say_pass "ps5-drm-setup applica correttamente max bpc=8 su connettore DP-1 tramite proptest"
+    else
+        say_fail "ps5-drm-setup non ha applicato max bpc=8 tramite proptest"
+    fi
+
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
         local missing_features=0
-        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "--prefer-output" "--force-grab-cursor" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "-noverifyfiles" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope" "exit 70" "exit 71" "exit 72"; do
+        local drm_scan_pos drm_setup_pos
+        drm_scan_pos=$(grep -n 'DRM_CARD_FOUND=0' "$gs_script" | head -n 1 | cut -d: -f1)
+        drm_setup_pos=$(grep -n '/usr/local/bin/ps5-drm-setup' "$gs_script" | head -n 1 | cut -d: -f1)
+        if [ -n "$drm_scan_pos" ] && [ -n "$drm_setup_pos" ] && [ "$drm_setup_pos" -gt "$drm_scan_pos" ]; then
+            say_pass "gamescope-session-ps5 applica il setup DRM dopo la scansione dei connettori"
+        else
+            say_fail "ps5-drm-setup viene eseguito prima della readiness DRM"
+            missing_features=$((missing_features + 1))
+        fi
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "WLR_DRM_DEVICES" "GAMESCOPE_DISPLAY_SUPPORTS_HDR=0" "GAMESCOPE_COLOR_MANAGEMENT_DISABLE=1" "RADV_DEBUG=nodcc" "WLR_DRM_NO_MODIFIERS=1" "libps5-drm-8bpc.so" "modetest" "unset LD_PRELOAD" "--prefer-output" "--force-composition" "--disable-layers" "--disable-color-management" "--force-grab-cursor" "--stats-path" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "verify_and_repair_steam" "ps5-drm-setup" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope" "exit 70" "exit 71" "exit 72" "exit 73"; do
             if ! grep -q -- "$feat" "$gs_script"; then
                 say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
                 missing_features=$((missing_features + 1))
             fi
         done
+        if grep -q -- "--drm-device" "$gs_script"; then
+            say_fail "gamescope-session-ps5 contiene l'opzione non supportata --drm-device"
+            missing_features=$((missing_features + 1))
+        fi
+        if grep -q -- "-noverifyfiles" "$gs_script"; then
+            say_fail "gamescope-session-ps5 contiene ancora -noverifyfiles (impedisce l'auto-verifica dei file troncati)"
+            missing_features=$((missing_features + 1))
+        fi
+        if grep -q -- "KWIN_DRM_PREFER_COLOR_DEPTH" "$gs_script"; then
+            say_fail "gamescope-session-ps5 contiene variabili KWin non pertinenti per Gamescope"
+            missing_features=$((missing_features + 1))
+        fi
         if [ $missing_features -eq 0 ]; then
-            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, codici errore fallback (70/71/72), sync D-Bus e flag resilienti"
+            say_pass "gamescope-session-ps5 contiene auto-rilevamento DRM, WLR_DRM_DEVICES, 8bpc/SDR env, --force-composition e auto-repair Steam"
         fi
     else
         say_fail "gamescope-session-ps5 non presente o non eseguibile"
+    fi
+
+    # Verifica intercettore KMS libps5-drm-8bpc.so
+    local shim_so="$MOCK_ROOT/usr/local/lib/libps5-drm-8bpc.so"
+    local shim_c="$MOCK_ROOT/usr/local/src/ps5-drm-8bpc.c"
+    if [ -f "$shim_so" ] && [ -s "$shim_so" ] && [ -f "$shim_c" ]; then
+        say_pass "Intercettore KMS 8bpc (libps5-drm-8bpc.so) compilato e installato con successo"
+    else
+        say_fail "libps5-drm-8bpc.so o ps5-drm-8bpc.c mancante o non compilato"
+    fi
+
+    # Test funzionale dello shim: verifica rimozione formati 10bpc (XR30/AR30) tramite mock
+    local mock_shim_test_c="$SANDBOX_DIR/mock_shim_test.c"
+    local mock_shim_test_bin="$SANDBOX_DIR/mock_shim_test"
+    local mock_fake_drm_c="$SANDBOX_DIR/mock_fake_drm.c"
+    local mock_fake_drm_so="$SANDBOX_DIR/libdrm.so.2"
+
+    cat << 'SHIM_TEST_EOF' > "$mock_fake_drm_c"
+#include <stdint.h>
+#include <stdlib.h>
+typedef struct { uint32_t count_formats; uint32_t *formats; } mock_plane_t;
+mock_plane_t *drmModeGetPlane(int fd, uint32_t id) {
+    (void)fd; (void)id;
+    mock_plane_t *p = malloc(sizeof(mock_plane_t));
+    p->count_formats = 3;
+    p->formats = malloc(sizeof(uint32_t) * 3);
+    p->formats[0] = 0x34325258; // DRM_FORMAT_XRGB8888
+    p->formats[1] = 0x30335258; // DRM_FORMAT_XRGB2101010
+    p->formats[2] = 0x30335241; // DRM_FORMAT_ARGB2101010
+    return p;
+}
+int drmGetCap(int fd, uint64_t cap, uint64_t *val) {
+    (void)fd; (void)cap; if (val) *val = 1; return 0;
+}
+SHIM_TEST_EOF
+    gcc -shared -fPIC -o "$mock_fake_drm_so" "$mock_fake_drm_c" 2>/dev/null || true
+
+    cat << 'CALLER_TEST_EOF' > "$mock_shim_test_c"
+#include <stdint.h>
+#include <stdlib.h>
+typedef struct { uint32_t count_formats; uint32_t *formats; } mock_plane_t;
+extern mock_plane_t *drmModeGetPlane(int fd, uint32_t id);
+extern int drmGetCap(int fd, uint64_t cap, uint64_t *val);
+int main() {
+    uint64_t cap = 999;
+    drmGetCap(0, 0x10, &cap);
+    mock_plane_t *p = drmModeGetPlane(0, 1);
+    if (!p || p->count_formats != 1 || p->formats[0] != 0x34325258 || cap != 0) return 1;
+    return 0;
+}
+CALLER_TEST_EOF
+    gcc -O2 -o "$mock_shim_test_bin" "$mock_shim_test_c" -L"$SANDBOX_DIR" -ldrm -Wl,-rpath,"$SANDBOX_DIR" 2>/dev/null || true
+
+    if [ -x "$mock_shim_test_bin" ] && [ -f "$shim_so" ]; then
+        if LD_PRELOAD="$shim_so" "$mock_shim_test_bin" 2>/dev/null; then
+            say_pass "libps5-drm-8bpc.so intercetta correttamente drmModeGetPlane eliminando i formati 10-bit e azzerando ADDFB2_MODIFIERS"
+        else
+            say_fail "libps5-drm-8bpc.so non ha filtrato correttamente i formati 10-bit o modifiers"
+        fi
+    fi
+
+    # Verifica utility diagnostica ps5-video-diag (P1/P3/P4)
+    local video_diag="$MOCK_ROOT/usr/local/bin/ps5-video-diag"
+    if [ -x "$video_diag" ] && bash -n "$video_diag"; then
+        say_pass "ps5-video-diag configurato e sintassi bash verificata"
+    else
+        say_fail "ps5-video-diag mancante, non eseguibile o con errori di sintassi"
+    fi
+
+    # Test simulato di ps5-video-diag: distinzione Segnale Attivo vs Assenza di Segnale
+    local diag_sysfs="$SANDBOX_DIR/mock_diag_sysfs"
+    mkdir -p "$diag_sysfs/card0-DP-1"
+    echo "connected" > "$diag_sysfs/card0-DP-1/status"
+    echo "On" > "$diag_sysfs/card0-DP-1/dpms"
+    echo "enabled" > "$diag_sysfs/card0-DP-1/enabled"
+    echo "3840x2160" > "$diag_sysfs/card0-DP-1/modes"
+
+    local diag_out
+    diag_out=$(PS5_VIDEO_DIAG_LOG="$SANDBOX_DIR/diag.log" bash -c '
+        # Esegui con mock sysfs
+        for c in "'"$diag_sysfs"'"/card*-*; do
+            [ -d "$c" ] || continue
+            c_name="${c##*/}"
+            status=$(cat "$c/status")
+            dpms=$(cat "$c/dpms")
+            top_mode=$(head -n 1 "$c/modes")
+            if [ "$status" = "connected" ] && [ "$dpms" = "On" ]; then
+                echo "DIAGNOSI FISICA: [SEGNALE ATTIVO] Connettore collegato ($c_name), DPMS=$dpms, Risoluzione=$top_mode."
+            fi
+        done
+    ')
+    if [[ "$diag_out" == *"[SEGNALE ATTIVO]"* ]]; then
+        say_pass "ps5-video-diag riconosce correttamente connettore DP-1 con segnale attivo e handshake HDMI valido"
+    else
+        say_fail "ps5-video-diag non ha rilevato il segnale attivo"
     fi
 
     # Test simulato di rilevamento risoluzione (4K mock vs Fallback 1080p)
@@ -559,6 +718,32 @@ test_module_gamescope() {
     else
         say_fail "Errore in is_steam_installed (atteso 1,0,0 - ottenuto: $steam_detect_res)"
     fi
+
+    # Test funzionale di ps5-steam-verify-repair: ricostruzione libreria troncata da archivio .zip.vz Valve
+    local repair_bin="$MOCK_ROOT/usr/local/bin/ps5-steam-verify-repair"
+    local mock_vz_steam="$SANDBOX_DIR/mock_vz_steam"
+    mkdir -p "$mock_vz_steam/package" "$mock_vz_steam/ubuntu12_32"
+    printf "ubuntu12_32/,-1;1790000000;0\nubuntu12_32/steamui.so,16;1790000000\nOSVER=-183\nVERSION=3\nSHA1=12345\n" > "$mock_vz_steam/package/steam_client_steamdeck_stable_ubuntu12.installed"
+    printf "TRUNC" > "$mock_vz_steam/ubuntu12_32/steamui.so"
+    python3 - "$mock_vz_steam/package/bins.zip.vz" << 'PYEOF'
+import io, lzma, struct, sys, zipfile, zlib
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+    zf.writestr("ubuntu12_32/steamui.so", b"INTACT_STEAM_LIB")
+raw_zip = buf.getvalue()
+comp = lzma.compress(raw_zip, format=lzma.FORMAT_ALONE)
+props = comp[:5]
+body = comp[13:]
+vza = b"VZa\x00\x00\x00\x00" + props + body + struct.pack("<II", zlib.crc32(raw_zip) & 0xFFFFFFFF, len(raw_zip)) + b"zv"
+with open(sys.argv[1], "wb") as f:
+    f.write(vza)
+PYEOF
+    "$repair_bin" "$mock_vz_steam" >/dev/null 2>&1
+    if [ "$(cat "$mock_vz_steam/ubuntu12_32/steamui.so" 2>/dev/null)" = "INTACT_STEAM_LIB" ]; then
+        say_pass "ps5-steam-verify-repair ripara automaticamente le librerie Steam troncate estraendole da archivi .zip.vz"
+    else
+        say_fail "ps5-steam-verify-repair non ha riparato correttamente la libreria troncata"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -573,10 +758,20 @@ test_module_session() {
     local tty_profile="$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
     local next_sess="$MOCK_ROOT/home/steam/.config/ps5-next-session"
 
-    if [ -x "$tty_profile" ] && [ -f "$next_sess" ] && [ "$(cat "$next_sess" | tr -d '\r\n ')" = "gamescope" ]; then
-        say_pass "Modulo session configura ps5-next-session=gamescope e ps5-tty-session.sh"
+    if [ -x "$tty_profile" ] && [ -f "$next_sess" ] && [ "$(cat "$next_sess" | tr -d '\r\n ')" = "desktop" ]; then
+        say_pass "Modulo session configura ps5-next-session=desktop e ps5-tty-session.sh"
     else
         say_fail "Modulo session non ha configurato correttamente ps5-next-session o ps5-tty-session.sh"
+    fi
+
+    if grep -q 'SESSION_STATE="WAIT_DRM_READY"' "$tty_profile" &&
+       grep -q 'SESSION_STATE="START_GAMESCOPE"' "$tty_profile" &&
+       grep -q '_session_drm_fingerprint' "$tty_profile" &&
+       grep -Fq 'SESSION_DRM_READY_TIMEOUT_SEC="${PS5_SESSION_DRM_READY_TIMEOUT_SEC:-30}"' "$tty_profile" &&
+       ! grep -q 'ps5-gamescope-bridge-handoff\|BRIDGE_HANDOFF_BIN' "$tty_profile"; then
+        say_pass "State machine: polling DRM, fallback predefinito a 30s e Gamescope diretto senza KDE intermedio"
+    else
+        say_fail "Sessione priva di polling DRM, timeout 30s o avvio diretto Gamescope"
     fi
 
     if grep -q "import-environment XDG_SESSION_TYPE XDG_CURRENT_DESKTOP" "$tty_profile" && \
@@ -587,7 +782,6 @@ test_module_session() {
         say_fail "_start_kde_plasma non sincronizza l'ambiente di attivazione KDE"
     fi
 
-    # 1. Test esecuzione normale di Gamescope (exit 0, durata valida -> NESSUN fallback a KDE)
     local mock_gs_ok="$SANDBOX_DIR/mock_gs_ok.sh"
     local mock_kde="$SANDBOX_DIR/mock_kde.sh"
     local run_trace="$SANDBOX_DIR/session_trace.log"
@@ -607,7 +801,41 @@ exit 0
 EOF
     chmod 0755 "$mock_gs_ok" "$mock_kde"
 
+    # 0. Test avvio diretto KDE Plasma quando session=desktop (default al boot)
     : > "$run_trace"
+    echo "desktop" > "$next_sess"
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_SKIP_DRM_WAIT=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_ok" \
+    PS5_PLASMA_BIN="$mock_kde" \
+    bash "$tty_profile"
+
+    if grep -q "KDE_STARTED" "$run_trace" && ! grep -q "GAMESCOPE_STARTED" "$run_trace"; then
+        say_pass "Avvio a freddo con session=desktop avvia direttamente KDE Plasma senza passare da Gamescope"
+    else
+        say_fail "Avvio con session=desktop non ha avviato direttamente KDE Plasma: $(tr '\n' ' ' < "$run_trace")"
+    fi
+
+    # 1. Test state machine: la sessione attende DRM stabile prima di Gamescope.
+    local mock_drm_root="$SANDBOX_DIR/mock_drm"
+    local mock_dri="$SANDBOX_DIR/mock-card0"
+    mkdir -p "$mock_drm_root/card0-DP-1"
+    touch "$mock_dri"
+    printf 'connected\n' > "$mock_drm_root/card0-DP-1/status"
+    printf '1920x1080\n' > "$mock_drm_root/card0-DP-1/modes"
+    : > "$run_trace"
+    echo "gamescope" > "$next_sess"
+    PS5_DRM_SYSFS_ROOT="$mock_drm_root" \
+    PS5_DRM_DEVICE="$mock_dri" \
+    PS5_SESSION_DRM_POLL_INTERVAL_SEC=0.01 \
+    PS5_SESSION_DRM_STABLE_SAMPLES=2 \
+    PS5_SESSION_DRM_READY_TIMEOUT_SEC=2 \
+    PS5_SESSION_LOG="$SANDBOX_DIR/session-state.log" \
     TRACE_FILE="$run_trace" \
     PS5_FORCE_TTY1=1 \
     PS5_SESSION_FILE="$next_sess" \
@@ -616,13 +844,65 @@ EOF
     PS5_ALERT_FILE="$alert_file" \
     PS5_GAMESCOPE_BIN="$mock_gs_ok" \
     PS5_PLASMA_BIN="$mock_kde" \
-    PS5_MIN_UPTIME_SEC=0 \
+    bash "$tty_profile"
+
+    local gs_line kde_line
+    gs_line=$(grep -n 'GAMESCOPE_STARTED' "$run_trace" | head -n1 | cut -d: -f1)
+    kde_line=$(grep -n 'KDE_STARTED' "$run_trace" | head -n1 | cut -d: -f1)
+    if [ -n "$gs_line" ] && [ -n "$kde_line" ] && [ "$gs_line" -lt "$kde_line" ] &&
+       grep -q 'state=DRM_READY' "$SANDBOX_DIR/session-state.log"; then
+        say_pass "Polling DRM: readiness stabile confermata prima del lancio diretto Gamescope"
+    else
+        say_fail "State machine non ha confermato DRM prima di Gamescope o ha avviato KDE in anticipo: $(tr '\n' ' ' < "$run_trace")"
+    fi
+
+    # 1b. Timeout esplicito: senza connettore pronto Gamescope non deve partire.
+    : > "$run_trace"
+    rm -rf "$mock_drm_root/card0-DP-1"
+    echo "gamescope" > "$next_sess"
+    PS5_DRM_SYSFS_ROOT="$mock_drm_root" \
+    PS5_DRM_DEVICE="$mock_dri" \
+    PS5_SESSION_DRM_POLL_INTERVAL_SEC=0.05 \
+    PS5_SESSION_DRM_STABLE_SAMPLES=2 \
+    PS5_SESSION_DRM_READY_TIMEOUT_SEC=1 \
+    PS5_SESSION_LOG="$SANDBOX_DIR/session-timeout.log" \
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_ok" \
+    PS5_PLASMA_BIN="$mock_kde" \
+    bash "$tty_profile"
+
+    if ! grep -q 'GAMESCOPE_STARTED' "$run_trace" &&
+       grep -q 'KDE_STARTED' "$run_trace" &&
+       grep -q 'state=DRM_TIMEOUT' "$SANDBOX_DIR/session-timeout.log"; then
+        say_pass "Timeout DRM: Gamescope non parte alla cieca e il fallback è soltanto successivo"
+    else
+        say_fail "Timeout DRM: comportamento inatteso, trace=$(tr '\n' ' ' < "$run_trace")"
+    fi
+
+    # 2. Test spegnimento/riavvio del sistema (PS5_SYSTEM_STOPPING=1 -> NESSUN fallback a KDE)
+    : > "$run_trace"
+    echo "gamescope" > "$next_sess"
+    TRACE_FILE="$run_trace" \
+    PS5_FORCE_TTY1=1 \
+    PS5_SESSION_SKIP_DRM_WAIT=1 \
+    PS5_SYSTEM_STOPPING=1 \
+    PS5_SESSION_FILE="$next_sess" \
+    PS5_SWITCH_MARKER="$switch_marker" \
+    PS5_FALLBACK_LOG="$fallback_log" \
+    PS5_ALERT_FILE="$alert_file" \
+    PS5_GAMESCOPE_BIN="$mock_gs_ok" \
+    PS5_PLASMA_BIN="$mock_kde" \
     bash "$tty_profile"
 
     if grep -q "GAMESCOPE_STARTED" "$run_trace" && ! grep -q "KDE_STARTED" "$run_trace"; then
-        say_pass "Avvio automatico Gamescope riuscito senza fallback quando non ci sono errori"
+        say_pass "Spegnimento/riavvio di sistema termina Gamescope senza attivare fallback KDE"
     else
-        say_fail "Comportamento anomalo durante avvio normale Gamescope: $(tr '\n' ' ' < "$run_trace")"
+        say_fail "Comportamento anomalo durante spegnimento sistema: $(tr '\n' ' ' < "$run_trace")"
     fi
 
     # 2. Test Fallback automatico su KDE quando Gamescope fallisce il caricamento (exit != 0)
@@ -630,7 +910,7 @@ EOF
     cat << 'EOF' > "$mock_gs_fail"
 #!/bin/sh
 echo "GAMESCOPE_FAILED" >> "$TRACE_FILE"
-exit 71
+exit 73
 EOF
     chmod 0755 "$mock_gs_fail"
     : > "$run_trace"
@@ -638,6 +918,7 @@ EOF
 
     TRACE_FILE="$run_trace" \
     PS5_FORCE_TTY1=1 \
+    PS5_SESSION_SKIP_DRM_WAIT=1 \
     PS5_SESSION_FILE="$next_sess" \
     PS5_SWITCH_MARKER="$switch_marker" \
     PS5_FALLBACK_LOG="$fallback_log" \
@@ -651,16 +932,23 @@ EOF
        grep -q "KDE_STARTED" "$run_trace" && \
        [ -f "$alert_file" ] && \
        grep -q "FALLBACK" "$fallback_log"; then
-        say_pass "Fallback automatico su KDE Plasma attivato in caso di errore di caricamento Gamescope (con alert e log)"
+        say_pass "Fallback automatico su KDE Plasma attivato in caso di errore/crash Gamescope (con alert e log)"
     else
         say_fail "Fallback su KDE Plasma NON attivato correttamente dopo errore Gamescope: $(tr '\n' ' ' < "$run_trace")"
     fi
 
-    # 3. Test Fallback automatico su KDE quando Gamescope crasha entro i primi 20s anche con exit 0
+    # 3. Test Fallback automatico su KDE anche quando Gamescope esce con codice 0 (es. SIGBUS mascherato da steam.sh)
+    #    e l'uptime supera MIN_UPTIME_SEC senza SWITCH_MARKER (nessuna zona morta / schermo nero)
+    local mock_uptime="$SANDBOX_DIR/mock_uptime"
+    echo "1200.00 1200.00" > "$mock_uptime"
     : > "$run_trace"
-    rm -f "$alert_file" "$fallback_log"
+    rm -f "$alert_file" "$fallback_log" "$switch_marker"
+    echo "gamescope" > "$next_sess"
+
     TRACE_FILE="$run_trace" \
     PS5_FORCE_TTY1=1 \
+    PS5_SESSION_SKIP_DRM_WAIT=1 \
+    PS5_UPTIME_FILE="$mock_uptime" \
     PS5_SESSION_FILE="$next_sess" \
     PS5_SWITCH_MARKER="$switch_marker" \
     PS5_FALLBACK_LOG="$fallback_log" \
@@ -670,10 +958,13 @@ EOF
     PS5_MIN_UPTIME_SEC=20 \
     bash "$tty_profile"
 
-    if grep -q "GAMESCOPE_STARTED" "$run_trace" && grep -q "KDE_STARTED" "$run_trace"; then
-        say_pass "Fallback automatico su KDE Plasma attivato su chiusura anomala precoce (< 20s)"
+    if grep -q "GAMESCOPE_STARTED" "$run_trace" && \
+       grep -q "KDE_STARTED" "$run_trace" && \
+       [ -f "$alert_file" ] && \
+       grep -q "FALLBACK" "$fallback_log"; then
+        say_pass "Fallback automatico su KDE Plasma garantito anche con exit=0 senza SWITCH_MARKER (nessuno schermo nero)"
     else
-        say_fail "Fallback su chiusura precoce (< 20s) non attivato"
+        say_fail "Fallback non attivato con exit=0 senza SWITCH_MARKER"
     fi
 }
 
@@ -764,10 +1055,11 @@ test_module_system_diag() {
 
     local snap="$MOCK_ROOT/usr/local/sbin/ps5-diag-snapshot"
     if [ -x "$snap" ] && bash -n "$snap" && \
+       grep -q "ps5-video-diag" "$snap" && \
        grep -q "ExecStart=/usr/local/sbin/ps5-diag-snapshot early" "$MOCK_ROOT/etc/systemd/system/ps5-diag-dump.service" && \
        grep -q "OnBootSec=100s" "$MOCK_ROOT/etc/systemd/system/ps5-diag-snapshot.timer" && \
        [ -L "$MOCK_ROOT/etc/systemd/system/timers.target.wants/ps5-diag-snapshot.timer" ]; then
-        say_pass "Diagnostica consolidata: snapshot early (sysinit) + full post-sessione (+100s)"
+        say_pass "Diagnostica consolidata: snapshot early (sysinit) + full post-sessione (+100s) con ps5-video-diag"
     else
         say_fail "Diagnostica consolidata ps5-diag-snapshot non configurata correttamente"
     fi

@@ -146,6 +146,9 @@ else
         tail -n 40 /home/steam/.gamescope-fallback.log 2>/dev/null || echo "(nessun fallback registrato)"
     } > "$OUT/status.txt" 2>&1
 fi
+if [ -x /usr/local/bin/ps5-video-diag ]; then
+    /usr/local/bin/ps5-video-diag > "$OUT/video.txt" 2>&1 || true
+fi
 chmod 0644 "$OUT"/*.txt 2>/dev/null || true
 sync
 exit 0
