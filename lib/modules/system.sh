@@ -18,6 +18,9 @@ module_system_run() {
         return 1
     fi
 
+    # 0. Installa runtime logger unificato (/usr/local/lib/ps5-log.sh) e permessi /var/log/ps5
+    install_runtime_logger "$cachy_mnt"
+
     # 1. Sudo senza password per l'utente steam (membro del gruppo wheel)
     sudo mkdir -p "${cachy_mnt}/etc/sudoers.d"
     echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee "${cachy_mnt}/etc/sudoers.d/wheel" >/dev/null
@@ -103,13 +106,25 @@ EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-diag-snapshot" >/dev/null
 #!/bin/sh
 # ps5-diag-snapshot [early|full]: dump diagnostico PS5 su /boot/efi/ps5-diag
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 MODE="${1:-full}"
 OUT=/boot/efi/ps5-diag
 mountpoint -q /boot/efi 2>/dev/null || OUT=/var/log/ps5-diag
 mkdir -p "$OUT" 2>/dev/null || exit 0
 
+ps5_log diag info "ps5-diag-snapshot avvio: mode=$MODE out=$OUT"
+
 dmesg > "$OUT/dmesg.txt" 2>&1 || true
 journalctl -b --no-pager > "$OUT/journal.txt" 2>&1 || true
+journalctl -b -1 --no-pager > "$OUT/journal-prev.txt" 2>&1 || true
+journalctl -b --grep="ps5-" --no-pager > "$OUT/ps5-journal.txt" 2>&1 || true
+
+# Copia log unificati e per modulo nella partizione boot leggibile da PC
+if [ -d /var/log/ps5 ]; then
+    mkdir -p "$OUT/logs" 2>/dev/null || true
+    cp -f /var/log/ps5/*.log* "$OUT/logs/" 2>/dev/null || true
+fi
+
 if [ "$MODE" = "early" ]; then
     lspci -vnn > "$OUT/lspci.txt" 2>&1 || true
 else
@@ -150,6 +165,8 @@ if [ -x /usr/local/bin/ps5-video-diag ]; then
     /usr/local/bin/ps5-video-diag > "$OUT/video.txt" 2>&1 || true
 fi
 chmod 0644 "$OUT"/*.txt 2>/dev/null || true
+[ -d "$OUT/logs" ] && chmod 0644 "$OUT/logs"/* 2>/dev/null || true
+ps5_log diag info "ps5-diag-snapshot completato con successo"
 sync
 exit 0
 EOF

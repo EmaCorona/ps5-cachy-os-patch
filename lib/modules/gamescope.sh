@@ -267,11 +267,13 @@ EOF
 # Setting 'max bpc' to 8 ensures standard 8bpc/24bpp RGB output compatible with the bridge.
 
 LOG_FILE="/var/log/ps5-drm-setup.log"
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 log() {
     local msg="[$(date -Is)] ps5-drm-setup: $*"
     if [ -w /var/log ] || [ -w "$LOG_FILE" ]; then
         echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
     fi
+    ps5_log drm info "$*"
     echo "$msg" >&2
 }
 
@@ -390,9 +392,12 @@ EOF
 #!/bin/bash
 # ps5-video-diag: Analisi non invasiva della catena video DRM/KMS su PS5
 # Rendering -> Swapchain -> DRM/KMS presentation -> Scanout AMDGPU DCN 2.0.1 -> Bridge MN864739 -> Display
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
 LOG_FILE="${PS5_VIDEO_DIAG_LOG:-/var/log/ps5-video-diag.log}"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+
+ps5_log video info "ps5-video-diag: inizio diagnostica pipeline video..."
 
 report() {
     echo "$*"
@@ -494,6 +499,7 @@ elif [ "$HAS_CONNECTED" -eq 0 ]; then
     report "RISULTATO: Nessun display fisico rilevato. Verificare cavo HDMI e bridge."
 fi
 report "=== Fine Report ==="
+ps5_log video info "ps5-video-diag completato con successo (salvato $LOG_FILE)"
 exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/bin/ps5-video-diag"
@@ -513,6 +519,7 @@ EOF
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define DRM_CAP_ADDFB2_MODIFIERS 0x10
 
@@ -541,6 +548,11 @@ typedef int (*orig_drmGetCap_fn)(int fd, uint64_t capability, uint64_t *value);
 int drmGetCap(int fd, uint64_t capability, uint64_t *value) {
     if (capability == DRM_CAP_ADDFB2_MODIFIERS) {
         if (value) *value = 0;
+        static int logged_cap = 0;
+        if (!logged_cap) {
+            fprintf(stderr, "ps5-drm-8bpc: intercettato drmGetCap(ADDFB2_MODIFIERS) -> forzato valore 0\n");
+            logged_cap = 1;
+        }
         return 0;
     }
     static orig_drmGetCap_fn real_fn = NULL;
@@ -554,15 +566,21 @@ drmModePlanePtr drmModeGetPlane(int fd, uint32_t plane_id) {
     drmModePlanePtr plane = real_fn ? real_fn(fd, plane_id) : NULL;
     if (!plane || !plane->formats || plane->count_formats == 0) return plane;
 
+    uint32_t removed = 0;
     uint32_t write_idx = 0;
     for (uint32_t i = 0; i < plane->count_formats; i++) {
         uint32_t fmt = plane->formats[i];
         if (fmt == DRM_FORMAT_XRGB2101010 || fmt == DRM_FORMAT_ARGB2101010 ||
             fmt == DRM_FORMAT_XBGR2101010 || fmt == DRM_FORMAT_ABGR2101010 ||
             fmt == DRM_FORMAT_RGBA1010102 || fmt == DRM_FORMAT_BGRA1010102) {
+            removed++;
             continue;
         }
         plane->formats[write_idx++] = fmt;
+    }
+    if (removed > 0) {
+        fprintf(stderr, "ps5-drm-8bpc: plane id=%u rimossi %u formati 10-bit (restano %u formati)\n",
+                plane_id, removed, write_idx);
     }
     plane->count_formats = write_idx;
     return plane;
@@ -596,6 +614,7 @@ SHIM_EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/bin/gamescope-session-ps5" >/dev/null
 #!/bin/bash
 # gamescope-session-ps5: launch Gamescope in DRM mode with dynamic display resolution detection
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 export LIBSEAT_BACKEND=logind
 export STEAM_ENABLE_DECK_UI=1
 export GAMESCOPE_FORCE_GRAB_CURSOR=1
@@ -613,6 +632,7 @@ export WLR_DRM_NO_MODIFIERS=1
 
 if [ -f /usr/local/lib/libps5-drm-8bpc.so ]; then
     export LD_PRELOAD="/usr/local/lib/libps5-drm-8bpc.so${LD_PRELOAD:+:$LD_PRELOAD}"
+    ps5_log gamescope info "KMS 8bpc shim attivo: LD_PRELOAD=$LD_PRELOAD"
 fi
 
 LOG_FILE="${PS5_GAMESCOPE_LOG:-/home/steam/.gamescope.log}"
@@ -624,6 +644,7 @@ LOG_FILE="${PS5_GAMESCOPE_LOG:-/home/steam/.gamescope.log}"
 # 0. Pre-check binari essenziali Gamescope e Steam (exit 70 in caso di assenza -> Fallback KDE)
 if [ ! -x /usr/bin/gamescope ] || [ ! -x /usr/bin/steam ]; then
     echo "[$(date -Is)] PS5 Gamescope ERRORE CRITICO: /usr/bin/gamescope o /usr/bin/steam mancante/non eseguibile." >> "$LOG_FILE"
+    ps5_log gamescope error "/usr/bin/gamescope o /usr/bin/steam mancante o non eseguibile (exit 70)"
     exit 70
 fi
 
@@ -662,6 +683,7 @@ done
 
 if [ "$DRM_CARD_FOUND" -eq 0 ] && [ "${PS5_SKIP_DRM_CHECK:-0}" != "1" ]; then
     echo "[$(date -Is)] PS5 Gamescope ERRORE DRM: Nessun connettore DRM/KMS rilevato in /sys/class/drm." >> "$LOG_FILE"
+    ps5_log gamescope error "Nessun connettore DRM/KMS rilevato in /sys/class/drm (exit 71)"
     exit 71
 fi
 
@@ -679,6 +701,7 @@ FINAL_CONN="${PS5_OUTPUT_CONN:-${DETECTED_CONN:-DP-1,HDMI-A-1}}"
 FINAL_REFRESH="${PS5_REFRESH_RATE:-60}"
 
 echo "[$(date -Is)] PS5 Gamescope Init: Connettore=${FINAL_CONN} (rilevato: ${DETECTED_CONN:-none}), Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}, Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}, Refresh=${FINAL_REFRESH}" >> "$LOG_FILE"
+ps5_log gamescope info "Init: Connettore=${FINAL_CONN} Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}"
 
 # 2b. Link Priming atomico del bridge Panasonic MN864739 a 594 MHz (8bpc XR24)
 if command -v modetest >/dev/null 2>&1 && [ -n "$DETECTED_CONN" ]; then
@@ -691,6 +714,7 @@ if command -v modetest >/dev/null 2>&1 && [ -n "$DETECTED_CONN" ]; then
     done
     [ -z "$CONN_NUM" ] && CONN_NUM="${PS5_CONNECTOR_ID:-67}"
     echo "[$(date -Is)] PS5 Gamescope: Link priming Panasonic bridge su ${DETECTED_CONN} (id=${CONN_NUM}) a ${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} (XR24)..." >> "$LOG_FILE"
+    ps5_log gamescope info "Link priming bridge Panasonic su ${DETECTED_CONN} (${CONN_NUM}) a ${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} (XR24)"
     modetest -M amdgpu -s "${CONN_NUM}:${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}-${FINAL_REFRESH}@XR24" -d >> "$LOG_FILE" 2>&1 || true
 fi
 
@@ -846,6 +870,7 @@ CONSOLE_OFFSET=0
 
 # Esporta DISPLAY e WAYLAND_DISPLAY creati da Gamescope nell'ambiente systemd --user / D-Bus
 # prima di lanciare Steam, così xdg-desktop-portal-gtk si avvia senza "cannot open display:"
+ps5_log gamescope info "Avvio processo gamescope con LD_PRELOAD=${LD_PRELOAD:-none}"
 "${GAMESCOPE_CMD[@]}" -- /bin/sh -c '
     unset LD_PRELOAD
     export XDG_CURRENT_DESKTOP=gamescope
@@ -861,6 +886,13 @@ CONSOLE_OFFSET=0
 ' -- "${STEAM_ARGS[@]}" >>"$LOG_FILE" 2>&1
 GS_RC=$?
 
+if [ "$GS_RC" -gt 128 ]; then
+    sig_num=$((GS_RC - 128))
+    ps5_log gamescope warn "Processo Gamescope terminato con segnale $sig_num (exit=$GS_RC)"
+else
+    ps5_log gamescope info "Processo Gamescope terminato con exit=$GS_RC"
+fi
+
 # Rileva crash fatali nativi di Steam (es. SIGBUS / SIGSEGV mascherati da steam.sh con exit 0)
 CRASH_DETECTED=0
 if [ -f "$LOG_FILE" ] && tail -c +$((LOG_OFFSET + 1)) "$LOG_FILE" 2>/dev/null | grep -qE "Bus error|Segmentation fault|core dumped|crash_20"; then
@@ -872,6 +904,7 @@ fi
 
 if [ "$CRASH_DETECTED" -eq 1 ]; then
     echo "[$(date -Is)] PS5 Gamescope ERRORE CRITICO: Rilevato crash nativo di Steam (SIGBUS/SIGSEGV). Attivo fallback KDE (exit 73)." >> "$LOG_FILE"
+    ps5_log gamescope error "Rilevato crash nativo di Steam (SIGBUS/SIGSEGV). Attivo fallback KDE (exit 73)"
     exit 73
 fi
 

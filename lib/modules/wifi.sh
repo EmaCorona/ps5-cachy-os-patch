@@ -105,6 +105,7 @@ EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-stage-firmware" >/dev/null
 #!/bin/sh
 set -eu
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
 SYSFS_PCI="${PS5_SYSFS_PCI:-/sys/bus/pci/devices}"
 
@@ -126,10 +127,12 @@ fi
 if [ "$is_mtk" -eq 1 ]; then
     # PS5 Chassis C con MediaTek MT7921 PCIe (14c3:7961): non caricare moal (incompatibile).
     # Eventuali dongle Wi-Fi USB vengono caricati automaticamente da udev tramite modalias.
+    ps5_log wifi info "Rilevato chip PCIe MediaTek MT7921 (14c3:7961) Chassis C: moal non caricato (gestione USB/fallback)"
     exit 0
 fi
 
 # Altrimenti procedi con staging firmware per PS5 con chip NXP IW620
+ps5_log wifi info "Rilevato chip Wi-Fi NXP IW620: verifica staging firmware"
 FW="nxp/pcieuartiw620_combo_v1.bin"
 DST_DIR="/usr/lib/firmware"
 DST="$DST_DIR/$FW"
@@ -142,6 +145,7 @@ if [ ! -e "$DST" ]; then
         for p in "$d/lib/$FW" "$d/$FW" "$d/nxp/pcieuartiw620_combo_v1.bin" "$d/pcieuartiw620_combo_v1.bin"; do
             if [ -f "$p" ]; then
                 install -Dm644 "$p" "$DST"
+                ps5_log wifi info "Firmware NXP posizionato con successo da $p -> $DST"
                 break 2
             fi
         done
@@ -151,7 +155,13 @@ fi
 # Carica moal solo se il firmware è presente
 if [ -e "$DST" ]; then
     modprobe -r moal mlan 2>/dev/null || true
-    modprobe moal 2>/dev/null || true
+    if modprobe moal 2>/dev/null; then
+        ps5_log wifi info "Modulo moal caricato con successo"
+    else
+        ps5_log wifi error "Errore nel caricamento del modulo moal"
+    fi
+else
+    ps5_log wifi warn "Firmware NXP $DST non trovato in alcuna partizione di boot"
 fi
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-stage-firmware"

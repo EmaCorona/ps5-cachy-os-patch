@@ -55,6 +55,7 @@ EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-bt-quiet" >/dev/null
 #!/bin/sh
 # ps5-bt-quiet: silenzia l'interfaccia hciN fantasma e alimenta il controller Bluetooth valido
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 ZERO="00:00:00:00:00:00"
 
 bt_addr() {
@@ -67,6 +68,7 @@ bt_addr() {
     echo "$a"
 }
 
+ps5_log bluetooth info "ps5-bt-quiet avvio: scansione controller Bluetooth..."
 valid_on=0
 for _ in $(seq 1 20); do
     [ -n "$(ls -d /sys/class/bluetooth/hci* 2>/dev/null)" ] && break
@@ -81,19 +83,19 @@ for attempt in 1 2 3; do
         addr=$(bt_addr "$idx")
         if [ -z "$addr" ] || [ "$addr" = "$ZERO" ]; then
             timeout 5 btmgmt --index "$idx" power off >/dev/null 2>&1 || hciconfig "hci$idx" down >/dev/null 2>&1 || true
-            echo "[ps5-bt-quiet] hci$idx (${addr:-sconosciuto}) disattivato: controller fantasma"
+            ps5_log bluetooth info "hci$idx (${addr:-sconosciuto}) disattivato: controller fantasma"
         else
             timeout 5 btmgmt --index "$idx" power on >/dev/null 2>&1 || true
             bluetoothctl -- select "$addr" >/dev/null 2>&1 || true
             bluetoothctl -- power on >/dev/null 2>&1 || true
-            echo "[ps5-bt-quiet] hci$idx ($addr) attivo"
+            ps5_log bluetooth info "hci$idx ($addr) controller valido attivato con successo"
             valid_on=1
         fi
     done
     [ "$valid_on" -eq 1 ] && break
     sleep 3
 done
-[ "$valid_on" -eq 1 ] || echo "[ps5-bt-quiet] Nessun controller Bluetooth valido rilevato"
+[ "$valid_on" -eq 1 ] || ps5_log bluetooth warn "Nessun controller Bluetooth valido rilevato dopo tentativi"
 exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-bt-quiet"

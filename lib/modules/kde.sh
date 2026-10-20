@@ -35,8 +35,10 @@ module_kde_run() {
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/bin/ps5-desktop-notify" >/dev/null
 #!/bin/bash
 # ps5-desktop-notify: mostra avvisi importanti (es. fallback Gamescope o primo avvio Steam) sul Desktop KDE Plasma
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 ALERT_FILE="${HOME}/.config/ps5-steam-firstboot-alert.txt"
 if [ -f "$ALERT_FILE" ]; then
+    ps5_log kde warn "ps5-desktop-notify: visualizzazione alert -> $(cat "$ALERT_FILE" 2>/dev/null)"
     sleep 3
     if command -v kdialog >/dev/null 2>&1; then
         kdialog --title "PS5 CachyOS Gaming Mode" --msgbox "$(cat "$ALERT_FILE")" 2>/dev/null || true

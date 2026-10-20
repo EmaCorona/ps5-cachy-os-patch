@@ -54,6 +54,10 @@ module_cleanup_run() {
 #!/bin/sh
 # ps5-boot-cleanup: Early boot state sanitizer for PS5
 # Executed automatically by systemd before user sessions start
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
+
+ps5_log boot info "===== NUOVO BOOT PS5 ===== kernel=$(uname -r 2>/dev/null) cmdline=\"$(cat /proc/cmdline 2>/dev/null)\""
+ps5_log boot info "vram.txt=$(cat /boot/efi/vram.txt 2>/dev/null || echo n/a) next-session=$(cat /home/steam/.config/ps5-next-session 2>/dev/null || echo n/a)"
 
 # Remove stale Steam pid/pipes, session switch markers, and old fallback alerts
 rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe 2>/dev/null || true
@@ -70,6 +74,7 @@ mkdir -p /home/steam/.config
 echo "desktop" > /home/steam/.config/ps5-next-session
 chown -R 1000:1000 /home/steam/.config 2>/dev/null || true
 
+ps5_log cleanup info "bonifica lock orfani e coredump completata; next-session impostata su desktop"
 exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-boot-cleanup"

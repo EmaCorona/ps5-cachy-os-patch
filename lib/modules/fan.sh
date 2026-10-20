@@ -59,6 +59,7 @@ EOF
 # - Deadband asimmetrica (2°C in raffreddamento) contro il micro-hunting
 # - Cool-Down Slew-Rate Limiter (+1°C target_temp / ciclo) contro l'Heat-Soak post-gaming
 # ==============================================================================
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
 TARGET_FILE="${PS5_FAN_TARGET_FILE:-/sys/bus/platform/devices/ps5-fan/target_temp}"
 HWMON_BASE="${PS5_HWMON_BASE:-/sys/class/hwmon}"
@@ -86,6 +87,7 @@ get_highest_temp() {
         fi
     done
     if [ "$max_t" -lt 0 ]; then
+        ps5_log fan warn "Nessun sensore hwmon valido, uso baseline 46°C"
         echo 46
     else
         echo "$max_t"
@@ -189,6 +191,9 @@ main_loop() {
     local last_applied_target=-1
     local hist=()
     local raw_t eff_t sum count s
+    local loop_count=0
+
+    ps5_log fan info "ps5-fan-daemon avviato: poll=${POLL_INTERVAL}s hyst=${HYST_DEG}°C target_file=$TARGET_FILE"
 
     while true; do
         raw_t=$(get_highest_temp)
@@ -213,7 +218,16 @@ main_loop() {
         current_target=$(compute_dynamic_target "$eff_t" "$current_target")
         if [ "$current_target" -ne "$last_applied_target" ]; then
             apply_fan_target "$current_target"
+            local cur_pwm
+            cur_pwm=$(compute_pwm_from_target "$current_target")
+            ps5_log fan info "Cambio profilo ventola: temp=${eff_t}°C target_temp=${current_target}°C pwm=${cur_pwm}"
             last_applied_target="$current_target"
+        fi
+
+        loop_count=$((loop_count + 1))
+        # Heartbeat ogni 150 cicli (~300s a poll=2s)
+        if [ $((loop_count % 150)) -eq 0 ]; then
+            ps5_log fan debug "Heartbeat ventola: temp=${eff_t}°C target_temp=${current_target}°C"
         fi
 
         if [ "${1:-}" = "--once" ]; then

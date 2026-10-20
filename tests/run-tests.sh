@@ -631,9 +631,15 @@ int main() {
 CALLER_TEST_EOF
     gcc -O2 -o "$mock_shim_test_bin" "$mock_shim_test_c" -L"$SANDBOX_DIR" -ldrm -Wl,-rpath,"$SANDBOX_DIR" 2>/dev/null || true
 
+    local shim_err="$SANDBOX_DIR/shim_stderr.txt"
     if [ -x "$mock_shim_test_bin" ] && [ -f "$shim_so" ]; then
-        if LD_PRELOAD="$shim_so" "$mock_shim_test_bin" 2>/dev/null; then
+        if LD_PRELOAD="$shim_so" "$mock_shim_test_bin" 2>"$shim_err"; then
             say_pass "libps5-drm-8bpc.so intercetta correttamente drmModeGetPlane eliminando i formati 10-bit e azzerando ADDFB2_MODIFIERS"
+            if grep -q "ps5-drm-8bpc:" "$shim_err"; then
+                say_pass "libps5-drm-8bpc.so emette log diagnostici su stderr per plane e capabilities"
+            else
+                say_fail "libps5-drm-8bpc.so non ha emesso log su stderr"
+            fi
         else
             say_fail "libps5-drm-8bpc.so non ha filtrato correttamente i formati 10-bit o modifiers"
         fi
@@ -1056,12 +1062,129 @@ test_module_system_diag() {
     local snap="$MOCK_ROOT/usr/local/sbin/ps5-diag-snapshot"
     if [ -x "$snap" ] && bash -n "$snap" && \
        grep -q "ps5-video-diag" "$snap" && \
+       grep -q "journal-prev.txt" "$snap" && \
+       grep -q "/var/log/ps5" "$snap" && \
        grep -q "ExecStart=/usr/local/sbin/ps5-diag-snapshot early" "$MOCK_ROOT/etc/systemd/system/ps5-diag-dump.service" && \
        grep -q "OnBootSec=100s" "$MOCK_ROOT/etc/systemd/system/ps5-diag-snapshot.timer" && \
        [ -L "$MOCK_ROOT/etc/systemd/system/timers.target.wants/ps5-diag-snapshot.timer" ]; then
-        say_pass "Diagnostica consolidata: snapshot early (sysinit) + full post-sessione (+100s) con ps5-video-diag"
+        say_pass "Diagnostica consolidata: snapshot early (sysinit) + full (+100s) con video-diag, log unificati e journal-prev"
     else
         say_fail "Diagnostica consolidata ps5-diag-snapshot non configurata correttamente"
+    fi
+}
+
+test_runtime_logger() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/cleanup.sh"
+    source "$REPO_DIR/lib/modules/wifi.sh"
+    source "$REPO_DIR/lib/modules/bluetooth.sh"
+    source "$REPO_DIR/lib/modules/fan.sh"
+    source "$REPO_DIR/lib/modules/ethernet.sh"
+    source "$REPO_DIR/lib/modules/gamescope.sh"
+    source "$REPO_DIR/lib/modules/kde.sh"
+    source "$REPO_DIR/lib/modules/session.sh"
+
+    install_runtime_logger "$MOCK_ROOT"
+
+    local log_sh="$MOCK_ROOT/usr/local/lib/ps5-log.sh"
+    local tmpfiles_conf="$MOCK_ROOT/etc/tmpfiles.d/ps5-log.conf"
+
+    if [ -x "$log_sh" ] && [ -f "$tmpfiles_conf" ] && grep -q "/var/log/ps5 1777" "$tmpfiles_conf"; then
+        say_pass "ps5-log.sh e tmpfiles ps5-log.conf installati ed eseguibili"
+    else
+        say_fail "ps5-log.sh o tmpfiles ps5-log.conf mancante o non eseguibile"
+    fi
+
+    # Test formato riga, livelli e per-componente log
+    local test_log_dir="$SANDBOX_DIR/test_ps5_logs"
+    (
+        export PS5_LOG_DIR="$test_log_dir"
+        export PS5_LOG_LEVEL="info"
+        . "$log_sh"
+        ps5_log "session" debug "messaggio debug scartato"
+        ps5_log "session" info "messaggio info registrato"
+        ps5_log "session" error "messaggio errore registrato"
+    )
+
+    if [ -f "$test_log_dir/ps5.log" ] && [ -f "$test_log_dir/session.log" ]; then
+        if ! grep -q "messaggio debug scartato" "$test_log_dir/ps5.log" && \
+           grep -q "messaggio info registrato" "$test_log_dir/ps5.log" && \
+           grep -q "messaggio errore registrato" "$test_log_dir/ps5.log" && \
+           grep -q "\[INFO \]" "$test_log_dir/ps5.log" && \
+           grep -q "\[ERROR\]" "$test_log_dir/ps5.log" && \
+           grep -qE "up=[0-9.]+s boot=" "$test_log_dir/ps5.log"; then
+            say_pass "ps5_log filtra per livello, formatta timestamp/uptime/boot_id e scrive su ps5.log + <component>.log"
+        else
+            say_fail "ps5_log non formatta o non filtra correttamente i log"
+        fi
+    else
+        say_fail "File ps5.log o session.log non generati in PS5_LOG_DIR"
+    fi
+
+    # Test rotazione file log oltre soglia PS5_LOG_MAX_BYTES
+    (
+        export PS5_LOG_DIR="$test_log_dir"
+        export PS5_LOG_LEVEL="info"
+        export PS5_LOG_MAX_BYTES=200
+        . "$log_sh"
+        for i in {1..10}; do
+            ps5_log "rotate_test" info "riga di log per superare la soglia di rotazione impostata a duecento byte #$i"
+        done
+    )
+
+    if [ -f "$test_log_dir/rotate_test.log.1" ]; then
+        say_pass "Rotazione file di log attiva al superamento di PS5_LOG_MAX_BYTES (.log -> .log.1)"
+    else
+        say_fail "Rotazione file di log non avvenuta"
+    fi
+
+    # Test ps5_log_cmd
+    (
+        export PS5_LOG_DIR="$test_log_dir"
+        export PS5_LOG_LEVEL="debug"
+        . "$log_sh"
+        ps5_log_cmd "cmd_test" true
+        ps5_log_cmd "cmd_test" false || true
+    )
+
+    if grep -q "ok: true" "$test_log_dir/cmd_test.log" && grep -q "rc=1 cmd: false" "$test_log_dir/cmd_test.log"; then
+        say_pass "ps5_log_cmd esegue il comando e registra esito/rc nei log"
+    else
+        say_fail "ps5_log_cmd non ha registrato correttamente l'esito dei comandi"
+    fi
+
+    # Esegui moduli per popolare gli script nel mock
+    module_cleanup_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_fan_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_gamescope_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    module_kde_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+
+    local scripts_to_check=(
+        "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup"
+        "$MOCK_ROOT/usr/local/sbin/ps5-stage-firmware"
+        "$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
+        "$MOCK_ROOT/usr/local/bin/ps5-fan-daemon"
+        "$MOCK_ROOT/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh"
+        "$MOCK_ROOT/usr/local/sbin/ps5-net-diag"
+        "$MOCK_ROOT/usr/local/bin/ps5-video-diag"
+        "$MOCK_ROOT/usr/local/bin/ps5-drm-setup"
+        "$MOCK_ROOT/usr/bin/gamescope-session-ps5"
+        "$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
+        "$MOCK_ROOT/usr/bin/steamos-session-select"
+    )
+
+    local all_integrated=1
+    for s in "${scripts_to_check[@]}"; do
+        if [ ! -f "$s" ] || ! grep -q "ps5-log.sh" "$s"; then
+            say_fail "Script $s non integra ps5-log.sh"
+            all_integrated=0
+        fi
+    done
+    if [ "$all_integrated" -eq 1 ]; then
+        say_pass "Tutti gli script runtime dei moduli integrano ps5-log.sh"
     fi
 }
 
@@ -1251,6 +1374,7 @@ run_test test_module_gamescope
 run_test test_module_session
 run_test test_module_system
 run_test test_module_system_diag
+run_test test_runtime_logger
 run_test test_idempotency
 run_test test_cli_orchestration
 run_test test_fix_ps5_boot

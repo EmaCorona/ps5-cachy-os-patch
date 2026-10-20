@@ -119,6 +119,7 @@ EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh" >/dev/null
 #!/bin/sh
 # 10-ps5-time-sync.sh: sincronizza l'orologio PS5 appena sale la rete (evita errori TLS X509_V_ERR_CERT_NOT_YET_VALID su Steam/HTTPS)
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 IFACE="$1"
 ACTION="$2"
 
@@ -131,6 +132,9 @@ case "$IFACE" in
     lo) exit 0 ;;
 esac
 
+old_sec=$(date +%s 2>/dev/null || echo 0)
+ps5_log time info "10-ps5-time-sync trigger: iface=$IFACE action=$ACTION (orologio iniziale: $(date -Is 2>/dev/null || date))"
+
 # Avvia/riavvia systemd-timesyncd per forzare il poll NTP immediato
 systemctl restart systemd-timesyncd.service 2>/dev/null || true
 
@@ -139,6 +143,8 @@ i=0
 while [ $i -lt 4 ]; do
     if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
         touch /var/lib/systemd/timesync/clock 2>/dev/null || true
+        new_sec=$(date +%s 2>/dev/null || echo 0)
+        ps5_log time info "Sincronizzazione orologio completata via NTP (delta=$((new_sec - old_sec))s, orario: $(date -Is 2>/dev/null || date))"
         exit 0
     fi
     sleep 0.5
@@ -156,6 +162,10 @@ fi
 if [ -n "$HTTP_DATE" ]; then
     date -u -s "$HTTP_DATE" >/dev/null 2>&1 || true
     touch /var/lib/systemd/timesync/clock 2>/dev/null || true
+    new_sec=$(date +%s 2>/dev/null || echo 0)
+    ps5_log time info "Sincronizzazione orologio completata via HTTP Date ($HTTP_DATE, delta=$((new_sec - old_sec))s)"
+else
+    ps5_log time warn "Sincronizzazione orologio non riuscita (né NTP né HTTP Date disponibili)"
 fi
 
 exit 0
@@ -180,6 +190,7 @@ EOF
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-net-diag" >/dev/null
 #!/bin/sh
 # ps5-net-diag: raccoglie lo stato della rete 90s dopo il boot in una partizione leggibile dal PC
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 OUT_DIR=""
 for d in /boot/efi /boot /efi; do
     if [ -d "$d" ] && mountpoint -q "$d" 2>/dev/null; then
@@ -190,6 +201,8 @@ done
 [ -n "$OUT_DIR" ] || OUT_DIR="/boot/efi/ps5-diag"
 mkdir -p "$OUT_DIR" 2>/dev/null || true
 OUT="$OUT_DIR/net.txt"
+
+ps5_log net info "ps5-net-diag: inizio analisi stato rete post-boot..."
 
 {
     echo "=== PS5 Post-Boot Network Diagnostics ($(date -Is 2>/dev/null || date)) ==="
@@ -242,6 +255,7 @@ OUT="$OUT_DIR/net.txt"
 } > "$OUT" 2>&1
 
 chmod 0644 "$OUT" 2>/dev/null || true
+ps5_log net info "ps5-net-diag: completato con successo (salvato $OUT)"
 sync
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-net-diag"

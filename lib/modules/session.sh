@@ -28,6 +28,7 @@ module_session_run() {
     sudo mkdir -p "${cachy_mnt}/etc/profile.d"
     cat << 'EOF' | sudo tee "${cachy_mnt}/etc/profile.d/ps5-tty-session.sh" >/dev/null
 # /etc/profile.d/ps5-tty-session.sh — tty1 autologin in KDE Plasma Desktop con supporto a Gamescope Gaming Mode
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
 case ${PS5_TTY_SESSION_INIT-} in
 1) return 0 2>/dev/null || exit 0 ;;
@@ -83,6 +84,7 @@ SESSION_LOG="${PS5_SESSION_LOG:-$HOME/.gamescope-session.log}"
 _session_log() {
     local msg="[$(date -Is 2>/dev/null || date)] ps5-session state=$1: $2"
     printf '%s\n' "$msg" >>"$SESSION_LOG" 2>/dev/null || true
+    ps5_log session info "state=$1 $2"
 }
 
 _session_drm_fingerprint() {
@@ -163,6 +165,7 @@ _wait_for_drm_ready() {
 }
 
 _start_kde_plasma() {
+    ps5_log session info "Avvio KDE Plasma 6 Wayland (bin=$PLASMA_BIN)"
     # Mantiene la sessione su desktop
     echo "desktop" >"$SESSION_FILE" 2>/dev/null || true
     unset WAYLAND_DISPLAY DISPLAY 2>/dev/null || true
@@ -200,15 +203,19 @@ _start_kde_plasma() {
     fi
 }
 
+ps5_log session info "ps5-tty-session: tty=${tty_path:-none} session_richiesta=$SESSION"
+
 case "$SESSION" in
   desktop|plasma)
     rm -f "$SWITCH_MARKER" 2>/dev/null || true
+    ps5_log session info "Sessione desktop: avvio diretto KDE Plasma"
     _start_kde_plasma
     return 0 2>/dev/null || exit 0
     ;;
   gamescope|*)
     echo "gamescope" >"$SESSION_FILE" 2>/dev/null || true
     rm -f "$SWITCH_MARKER" 2>/dev/null || true
+    ps5_log session info "Sessione gamescope: avvio procedura Gamescope Gaming Mode"
 
     SESSION_STATE="WAIT_DRM_READY"
     while :; do
@@ -221,6 +228,7 @@ case "$SESSION" in
                     2) return 0 2>/dev/null || exit 0 ;;
                     *)
                         echo "[$(date -Is)] PS5 Session: DRM readiness timeout; fallback KDE dopo il tentativo diretto annullato." >>"$FALLBACK_LOG"
+                        ps5_log session warn "DRM readiness timeout; fallback automatico su KDE Plasma"
                         SESSION_STATE="FALLBACK_KDE"
                         ;;
                 esac
@@ -268,11 +276,13 @@ case "$SESSION" in
     if [ -f "$SWITCH_MARKER" ] || [ "$next_req" = "desktop" ] || [ "$next_req" = "plasma" ]; then
         rm -f "$SWITCH_MARKER" 2>/dev/null || true
         echo "[$(date -Is)] PS5 Session: Passaggio volontario da Gamescope a KDE Plasma Desktop." >>"$FALLBACK_LOG"
+        ps5_log session info "Passaggio volontario da Gamescope a KDE Plasma Desktop (marker o ps5-next-session)"
         _start_kde_plasma
     # Caso 2: Qualsiasi uscita non-shutdown di Gamescope senza switch volontario attiva SEMPRE il fallback a KDE Plasma
     # (elimina la zona morta quando steam.sh maschera un crash con exit=0 o quando NTP avanza l'orologio di sistema)
     else
         echo "[$(date -Is)] PS5 Session FALLBACK: Gamescope terminato con errore o chiusura anomala (exit=${gs_exit}, durata=${gs_duration}s). Avvio automatico di KDE Plasma." >>"$FALLBACK_LOG"
+        ps5_log session error "Gamescope terminato in modo anomalo (exit=${gs_exit}, durata=${gs_duration}s). Avvio automatico KDE Plasma"
         if [ ! -f "$ALERT_FILE" ]; then
             cat << ALERT_EOF >"$ALERT_FILE"
 AVVISO FALLBACK AUTOMATICO: L'interfaccia Gamescope Gaming Mode ha riscontrato un errore o si è chiusa in modo anomalo (codice uscita: ${gs_exit}, durata: ${gs_duration}s).
@@ -293,16 +303,20 @@ EOF
     # 3. Configura/aggiorna /usr/bin/steamos-session-select per gestire switch bidirezionale pulito
     sudo mkdir -p "${cachy_mnt}/usr/bin"
     if [ -f "${cachy_mnt}/usr/bin/steamos-session-select" ]; then
+        sudo sed -i '/ps5-log.sh/d' "${cachy_mnt}/usr/bin/steamos-session-select"
         sudo sed -i '/systemctl --user stop plasma-workspace-wayland.target/d' "${cachy_mnt}/usr/bin/steamos-session-select"
         sudo sed -i '/systemctl --user unset-environment WAYLAND_DISPLAY/d' "${cachy_mnt}/usr/bin/steamos-session-select"
         sudo sed -i '/touch \/tmp\/ps5-user-session-switch/d' "${cachy_mnt}/usr/bin/steamos-session-select"
+        sudo sed -i '1a \[ -f /usr/local/lib/ps5-log.sh ] \&\& . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }\nps5_log "session-select" info "steamos-session-select invocato con arg=\"$*\" da pid=$PPID"' "${cachy_mnt}/usr/bin/steamos-session-select"
         sudo sed -i '/pkill -u steam plasmashell/i \        touch /tmp/ps5-user-session-switch 2>/dev/null || true\n        systemctl --user stop plasma-workspace-wayland.target plasma-core.target xdg-desktop-portal.service xdg-desktop-portal-kde.service xdg-desktop-portal-gtk.service 2>/dev/null || true\n        systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP KDE_SESSION_VERSION 2>/dev/null || true' "${cachy_mnt}/usr/bin/steamos-session-select"
         sudo sed -i 's/loginctl terminate-session "\$XDG_SESSION_ID"$/loginctl terminate-session "\$XDG_SESSION_ID" 2>\/dev\/null || true/g' "${cachy_mnt}/usr/bin/steamos-session-select"
     else
         cat << 'EOF' | sudo tee "${cachy_mnt}/usr/bin/steamos-session-select" >/dev/null
 #!/bin/bash
 set -euo pipefail
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 TARGET="${1:-desktop}"
+ps5_log "session-select" info "steamos-session-select: switch richiesto target=$TARGET da pid=$PPID"
 SESSION_FILE="/home/steam/.config/ps5-next-session"
 mkdir -p "$(dirname "$SESSION_FILE")"
 
@@ -338,6 +352,8 @@ EOF
 if [ "$(tty 2>/dev/null)" = "/dev/tty1" ] && [ -z "${WAYLAND_DISPLAY-}" ] && [ -z "${DISPLAY-}" ]; then
     sys_state=$(systemctl is-system-running 2>/dev/null || echo "running")
     if [ "$sys_state" != "stopping" ] && ! systemctl list-jobs 2>/dev/null | grep -qE 'shutdown\.target|reboot\.target|poweroff\.target|halt\.target'; then
+        [ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
+        ps5_log session error "bash_profile emergenza: avvio forzato KDE Plasma su tty1"
         echo "[$(date -Is)] PS5 bash_profile FALLBACK: Avvio di emergenza KDE Plasma su tty1." >> "$HOME/.gamescope-fallback.log"
         echo "desktop" > "$HOME/.config/ps5-next-session" 2>/dev/null || true
         export LIBSEAT_BACKEND=logind XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_SESSION_VERSION=6
