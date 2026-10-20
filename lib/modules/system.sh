@@ -64,18 +64,23 @@ EOF
         fi
     fi
 
-    # 6. Kernel cmdline.txt: rimozione risoluzioni forzate e abilitazione auto-riparazione filesystem
+    # 6. Kernel cmdline.txt: modalità stabile 1080p60 per bridge Panasonic MN864739 e auto-riparazione filesystem
     if [ -n "$boot_mnt" ] && [ -f "$boot_mnt/cmdline.txt" ]; then
         local cmdline
         cmdline=$(cat "$boot_mnt/cmdline.txt" | tr -d '\r\n')
         local modified=0
 
-        # Rimuove risoluzioni video hardcoded (es. video=DP-1:1920x1080@60) per consentire
-        # a KDE Wayland e Gamescope di negoziare la risoluzione nativa del monitor/TV via EDID/KMS
-        if echo "$cmdline" | grep -qE "video=[^[:space:]]+"; then
-            cmdline=$(echo "$cmdline" | sed -E 's/video=[^[:space:]]+//g')
+        # Il bridge DisplayPort->HDMI Panasonic MN864739 della PS5 sotto Linux necessita di agganciare
+        # il link HDMI standard 1080p60 (pixel clock 148.5 MHz) da cold boot per sincronizzare il PLL e lo scrambler.
+        # A 4K60 (594 MHz), il bridge fallisce il link training da freddo provocando schermo nero o bianco.
+        if ! echo "$cmdline" | grep -q "video=DP-1:1920x1080@60"; then
+            if echo "$cmdline" | grep -qE "video=[^[:space:]]+"; then
+                cmdline=$(echo "$cmdline" | sed -E 's/video=[^[:space:]]+/video=DP-1:1920x1080@60/g')
+            else
+                cmdline="${cmdline} video=DP-1:1920x1080@60"
+            fi
             modified=1
-            log_info "Rimossa risoluzione hardcoded da cmdline.txt per consentire auto-detection EDID"
+            log_info "Configurato video=DP-1:1920x1080@60 in cmdline.txt per stabilizzazione bridge Panasonic"
         fi
 
         if ! echo "$cmdline" | grep -q "fsck.repair"; then
@@ -88,6 +93,7 @@ EOF
             # Normalizza spazi multipli ed elimina spazi iniziali/finali
             cmdline=$(echo "$cmdline" | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
             echo "$cmdline" > "$boot_mnt/cmdline.txt"
+            ps5_log system info "cmdline.txt aggiornato con parametri di stabilita': $cmdline"
         fi
     fi
 

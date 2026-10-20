@@ -198,6 +198,33 @@ Dall'ispezione comparativa tra KDE Plasma e Gamescope è emerso che KDE funziona
 Gamescope all'avvio a freddo ignora le variabili di KWin e la proprietà connettore `max bpc=8`, selezionando incondizionatamente in `src/Backends/DRMBackend.cpp:1640` il formato a 10 bit `DRM_FORMAT_XRGB2101010` (`XR30`). A 4K60, 10bpc richiede **742.5 MHz** di TMDS clock, saturando la banda del bridge e provocando schermo nero a fronte di audio e controller perfettamente funzionanti.
 
 ### 15.2 Architettura Correttiva
-1. **Compilazione ed Iniezione di `libps5-drm-8bpc.so`:** Intercettore C leggero compilato in `/usr/local/lib/` e caricato via `LD_PRELOAD` esclusivamente per Gamescope. Intercetta `drmModeGetPlane` per rimuovere i FourCC a 10 bit (`XR30`, `AR30`, `XB30`, `AB30`) e `drmGetCap` per azzerare `DRM_CAP_ADDFB2_MODIFIERS`. Gamescope ripiega nativamente su `DRM_FORMAT_XRGB8888` (24bpp / 8bpc a 594 MHz).
-2. **Link Priming atomico con `modetest`:** Prima del lancio di Gamescope, esegue un modeset a 24bpp (`XR24`) di 100ms con rilascio master (`-d`) per sincronizzare il PLL del bridge Panasonic prima del compositing.
-3. **Isolamento dell'Ambiente Steam:** Disattivazione di `LD_PRELOAD` (`unset LD_PRELOAD`) nel subshell di esecuzione di `/usr/bin/steam`, garantendo integrità a Steam e ai giochi Proton.
+1. **Compilazione ed Iniezione di `libps5-drm-8bpc.so`:** Intercettore C leggero compilato in `/usr/local/lib/` e caricato via `LD_PRELOAD` esclusivamente per Gamescope. Intercetta `drmModeGetPlane` per rimuovere i FourCC a 10 bit (`XR30`, `AR30`, `XB30`, `AB30`) e `drmGetCap` per azzerare `DRM_CAP_ADDFB2_MODIFIERS`. Gamescope ripiega nativamente su `DRM_FORMAT_XRGB8888` (24bpp / 8bpc).
+2. **Isolamento dell'Ambiente Steam:** Disattivazione di `LD_PRELOAD` (`unset LD_PRELOAD`) nel subshell di esecuzione di `/usr/bin/steam`, garantendo integrità a Steam e ai giochi Proton.
+
+---
+
+## 16. Risoluzione della Regressione Display e Baseline di Link Sincronizzato 1080p60
+
+### 16.1 Analisi Forense della Regressione su KDE e Gamescope
+Quando la console avviava correttamente KDE Plasma e permetteva lo switch manuale a Gamescope:
+1. La riga di comando del kernel in `/boot/cmdline.txt` conteneva `video=DP-1:1920x1080@60`.
+2. Il driver `amdgpu` inizializzava il trasmettitore DisplayPort interno e il bridge **Panasonic MN864739** a **1920x1080@60Hz** (pixel clock TMDS di soli **148.5 MHz**). A questa frequenza standard, il bridge aggancia stabilmente il link fisico HDMI con qualsiasi TV o monitor senza richiedere scrambler HDMI 2.0 ad alta velocità o comandi proprietari Sony.
+3. KWin utilizzava `KWIN_DRM_PREFER_COLOR_DEPTH=24` e `KWIN_FORCE_ASSUME_HDR_SUPPORT=0`, proiettando a schermo 8bpc pulito. Lo switch a Gamescope ereditava un link fisico già agganciato e addestrato.
+
+Con il commit `40e1716`:
+1. La rimozione di `video=...` da `cmdline.txt` ha portato `amdgpu` ad adottare la risoluzione EDID nativa del televisore 4K (`Beyond TV`: **3840x2160@60Hz** a **594.000 MHz**).
+2. A 594 MHz, il bridge Panasonic fallisce l'addestramento del link TMDS da freddo (*cold boot*), generando schermo nero o bianco sia su Gamescope che su KDE.
+3. Inoltre, il servizio `ps5-drm-setup.service` introdotto a `sysinit.target` invocava `proptest` a basso livello, perturbando lo stato KMS atomico prima dell'avvio del compositor.
+4. KWin aveva infine salvato la modalità 4K in `kwinoutputconfig.json`, impedendo il ritorno automatico a 1080p.
+
+### 16.2 Architettura Risolutiva Definitiva
+1. **Ripristino del Baseline Kernel 1080p60 (`lib/modules/system.sh`):** Configurazione automatica di `video=DP-1:1920x1080@60` in `/boot/cmdline.txt`. Il bridge si aggancia solidamente a 148.5 MHz al primo istante di boot.
+2. **Bonifica del Servizio Precoce (`lib/modules/gamescope.sh`):** Disattivazione e rimozione di `ps5-drm-setup.service` da `sysinit.target.wants` per proteggere lo stato KMS atomico. Rimozione di `modetest` link priming ridondante.
+3. **Bonifica Configurazioni 4K Stale (`lib/modules/cleanup.sh`, `lib/modules/kde.sh`):** Eliminazione preventiva di `kwinoutputconfig.json` per ripristinare la modalità 1080p60 nativa del link.
+4. **Enforcement 8bpc Uniforme:** Mantenimento di `KWIN_DRM_PREFER_COLOR_DEPTH=24` per KDE e dell'intercettore `libps5-drm-8bpc.so` via `LD_PRELOAD` per Gamescope, garantendo che nessuno dei due ambienti richieda formati a 10 bit incompatibili col bridge.
+
+### 16.3 Roadmap Evolutiva della Pipeline Display PS5
+Per la trattazione tecnica estesa della catena video (bridge Panasonic MN864739, DCN 2.0.1 e roadmap verso 4K/10-bit/HDR), fare riferimento a [PS5-DISPLAY-PIPELINE.md](../PS5-DISPLAY-PIPELINE.md):
+- **4K60 / FRL HDMI 2.1:** In attesa del driver kernel dedicato `drm/bridge/mn864739.c` con gestione I2C dello scrambling SCDC, è prevista l'adozione nel patchset di un algoritmo di *Safe Clamping* (risoluzione nativa fino a 1080p, clamp automatico a 1080p60 su TV 4K).
+- **10-bit e HDR in Gamescope:** In attesa dell'upstream di opzioni native in Gamescope (`--max-bpc 8`), `libps5-drm-8bpc.so` assicura la compatibilità trasparente senza impatto prestazionale né modifiche al runtime Steam/Proton.
+

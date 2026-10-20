@@ -40,6 +40,12 @@ module_cleanup_run() {
     sudo chown -R 1000:1000 "${cachy_mnt}/home/steam/.config" 2>/dev/null || true
     sudo chmod 0644 "${cachy_mnt}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 
+    # 2b. Rimozione configurazione kwinoutputconfig.json 4K stale per consentire aggancio 1080p60 pulito
+    if [ -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" ]; then
+        sudo rm -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" 2>/dev/null || true
+        log_info "Rimossa configurazione kwinoutputconfig.json 4K per ripristino modalità pulita 1080p60"
+    fi
+
     # 3. Pulizia coredump accumulati e file drkonqi (previene saturazione I/O flash)
     if [ -d "${cachy_mnt}/var/lib/systemd/coredump" ]; then
         sudo rm -f "${cachy_mnt}/var/lib/systemd/coredump"/* 2>/dev/null || true
@@ -64,6 +70,11 @@ rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe 2>/dev/null || true
 rm -f /home/steam/.local/share/Steam/*.pid /home/steam/.local/share/Steam/*.pipe 2>/dev/null || true
 rm -f /tmp/.X*-lock /tmp/.x11-unix/X* /tmp/ps5-user-session-switch 2>/dev/null || true
 rm -f /home/steam/.config/ps5-steam-firstboot-alert.txt 2>/dev/null || true
+
+# If kwinoutputconfig.json forces 4K (3840), remove it to let KWin adhere to the stable 1080p60 kernel link
+if [ -f /home/steam/.config/kwinoutputconfig.json ] && grep -q "3840" /home/steam/.config/kwinoutputconfig.json 2>/dev/null; then
+    rm -f /home/steam/.config/kwinoutputconfig.json 2>/dev/null || true
+fi
 
 # Purge any dangling coredump files
 rm -f /var/lib/systemd/coredump/* 2>/dev/null || true

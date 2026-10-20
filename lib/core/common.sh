@@ -12,6 +12,20 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Logger host/patcher compatibile con ps5_log a runtime
+if ! declare -F ps5_log >/dev/null 2>&1; then
+    ps5_log() {
+        local comp="${1:-system}"
+        local lvl="${2:-info}"
+        shift 2 2>/dev/null || true
+        case "$lvl" in
+            error|ERROR) _log_patch_history "ERRORE" "[$comp] $*" ;;
+            warn|WARN)   _log_patch_history "WARN"   "[$comp] $*" ;;
+            *)           _log_patch_history "INFO"   "[$comp] $*" ;;
+        esac
+    }
+fi
+
 # Logging patcher su chiavetta (se CACHY_MNT o MOCK_ROOT disponibile)
 _log_patch_history() {
     local target_root="${CACHY_MNT:-${MOCK_ROOT:-}}"

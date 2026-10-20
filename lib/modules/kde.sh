@@ -30,6 +30,12 @@ module_kde_run() {
         done
     fi
 
+    # 1b. Rimozione configurazione kwinoutputconfig.json 4K stale per garantire avvio pulito su link 1080p60
+    if [ -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" ]; then
+        sudo rm -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" 2>/dev/null || true
+        log_info "Rimossa configurazione kwinoutputconfig.json residua per sincronizzazione KDE 1080p60"
+    fi
+
     # 2. Notificatore Desktop per avvisi di sistema, fallback Gamescope e primo avvio Steam
     sudo mkdir -p "${cachy_mnt}/usr/local/bin" "${cachy_mnt}/etc/xdg/autostart"
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/bin/ps5-desktop-notify" >/dev/null

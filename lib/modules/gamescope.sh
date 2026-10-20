@@ -367,24 +367,10 @@ exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/bin/ps5-drm-setup"
 
-    # Servizio systemd early-boot per applicare max bpc=8 all'avvio del sistema
-    sudo mkdir -p "${cachy_mnt}/etc/systemd/system/sysinit.target.wants"
-    cat << 'EOF' | sudo tee "${cachy_mnt}/etc/systemd/system/ps5-drm-setup.service" >/dev/null
-[Unit]
-Description=PS5 DRM DisplayPort to HDMI Bridge Setup (8bpc limit)
-DefaultDependencies=no
-After=systemd-udev-settle.service
-Before=display-manager.service getty@tty1.service gamescope.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/ps5-drm-setup
-RemainAfterExit=yes
-
-[Install]
-WantedBy=sysinit.target
-EOF
-    sudo ln -sf /etc/systemd/system/ps5-drm-setup.service "${cachy_mnt}/etc/systemd/system/sysinit.target.wants/ps5-drm-setup.service"
+    # Disabilita e rimuove il servizio early-boot ps5-drm-setup se presente
+    # (l'invocazione di proptest a livello di sysinit.target interferisce con lo stato KMS atomico del kernel)
+    sudo rm -f "${cachy_mnt}/etc/systemd/system/sysinit.target.wants/ps5-drm-setup.service" 2>/dev/null || true
+    sudo rm -f "${cachy_mnt}/etc/systemd/system/ps5-drm-setup.service" 2>/dev/null || true
 
     # 1d. Installa utility diagnostica non invasiva della catena video (P1/P3/P4 e separazione rendering/presentazione)
     sudo mkdir -p "${cachy_mnt}/usr/local/bin"
@@ -687,12 +673,7 @@ if [ "$DRM_CARD_FOUND" -eq 0 ] && [ "${PS5_SKIP_DRM_CHECK:-0}" != "1" ]; then
     exit 71
 fi
 
-# Applica max-bpc solo dopo aver individuato un connettore connected con una mode valida.
-if [ -n "$DETECTED_W" ] && [ -x /usr/local/bin/ps5-drm-setup ]; then
-    /usr/local/bin/ps5-drm-setup >> "$LOG_FILE" 2>&1 || true
-fi
-
-# 2. Risoluzione e connettore finali (Override > Rilevamento automatico > Fallback standard)
+# 2. Risoluzione e connettore finali (Override > Rilevamento automatico > Fallback standard 1080p60)
 FINAL_OUTPUT_W="${PS5_OUTPUT_WIDTH:-${DETECTED_W:-1920}}"
 FINAL_OUTPUT_H="${PS5_OUTPUT_HEIGHT:-${DETECTED_H:-1080}}"
 FINAL_NESTED_W="${PS5_NESTED_WIDTH:-$FINAL_OUTPUT_W}"
@@ -702,21 +683,6 @@ FINAL_REFRESH="${PS5_REFRESH_RATE:-60}"
 
 echo "[$(date -Is)] PS5 Gamescope Init: Connettore=${FINAL_CONN} (rilevato: ${DETECTED_CONN:-none}), Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}, Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}, Refresh=${FINAL_REFRESH}" >> "$LOG_FILE"
 ps5_log gamescope info "Init: Connettore=${FINAL_CONN} Output=${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} Nested=${FINAL_NESTED_W}x${FINAL_NESTED_H}"
-
-# 2b. Link Priming atomico del bridge Panasonic MN864739 a 594 MHz (8bpc XR24)
-if command -v modetest >/dev/null 2>&1 && [ -n "$DETECTED_CONN" ]; then
-    CONN_NUM=""
-    for cr in /sys/class/drm/card*-${DETECTED_CONN}; do
-        if [ -f "$cr/connector_id" ]; then
-            CONN_NUM=$(cat "$cr/connector_id" 2>/dev/null || true)
-            break
-        fi
-    done
-    [ -z "$CONN_NUM" ] && CONN_NUM="${PS5_CONNECTOR_ID:-67}"
-    echo "[$(date -Is)] PS5 Gamescope: Link priming Panasonic bridge su ${DETECTED_CONN} (id=${CONN_NUM}) a ${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} (XR24)..." >> "$LOG_FILE"
-    ps5_log gamescope info "Link priming bridge Panasonic su ${DETECTED_CONN} (${CONN_NUM}) a ${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}@${FINAL_REFRESH} (XR24)"
-    modetest -M amdgpu -s "${CONN_NUM}:${FINAL_OUTPUT_W}x${FINAL_OUTPUT_H}-${FINAL_REFRESH}@XR24" -d >> "$LOG_FILE" 2>&1 || true
-fi
 
 # 3. Controllo stato di Bootstrap/Integrità di Steam e sincronizzazione DHCP di Rete
 STEAM_DIR="${PS5_STEAM_DIR:-/home/steam/.local/share/Steam}"
@@ -937,7 +903,6 @@ module_gamescope_check() {
        [ -x "${cachy_mnt}/usr/local/bin/ps5-steam-verify-repair" ] && \
        [ -x "${cachy_mnt}/usr/local/bin/ps5-drm-setup" ] && \
        [ -x "${cachy_mnt}/usr/local/bin/ps5-video-diag" ] && \
-       [ -f "${cachy_mnt}/etc/systemd/system/ps5-drm-setup.service" ] && \
        [ -f "${cachy_mnt}/usr/share/xdg-desktop-portal/gamescope-portals.conf" ]; then
         log_success "gamescope-session-ps5, libps5-drm-8bpc.so, ps5-steam-verify-repair, ps5-drm-setup, ps5-video-diag e gamescope-portals.conf configurati."
         return 0

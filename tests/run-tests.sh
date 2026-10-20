@@ -500,19 +500,19 @@ test_module_gamescope() {
         say_fail "gamescope-portals.conf mancante o non configurato"
     fi
 
-    # Verifica ps5-drm-setup e servizio systemd early-boot
+    # Verifica ps5-drm-setup utility e disabilitazione servizio systemd early-boot (evita interferenze KMS)
     local drm_setup="$MOCK_ROOT/usr/local/bin/ps5-drm-setup"
     local drm_service="$MOCK_ROOT/etc/systemd/system/ps5-drm-setup.service"
     local drm_symlink="$MOCK_ROOT/etc/systemd/system/sysinit.target.wants/ps5-drm-setup.service"
 
-    if [ -x "$drm_setup" ] && grep -q "max bpc" "$drm_setup" && [ -f "$drm_service" ] && [ -L "$drm_symlink" ]; then
+    if [ -x "$drm_setup" ] && grep -q "max bpc" "$drm_setup" && [ ! -L "$drm_symlink" ]; then
         if bash -n "$drm_setup"; then
-            say_pass "ps5-drm-setup (8bpc limit) e servizio systemd early-boot configurati correttamente (sintassi bash -n verificata)"
+            say_pass "ps5-drm-setup presente come utility e servizio early-boot disabilitato da sysinit (KMS protetto)"
         else
             say_fail "ps5-drm-setup contiene errori di sintassi bash"
         fi
     else
-        say_fail "ps5-drm-setup o ps5-drm-setup.service mancante o non configurato"
+        say_fail "ps5-drm-setup mancante o servizio early-boot ancora attivo in sysinit"
     fi
 
     # Verifica esecuzione di ps5-drm-setup con mock proptest (impostazione max bpc=8 e colorspace=0)
@@ -546,16 +546,7 @@ MOCK_PT_EOF
     # Verifica gamescope-session-ps5
     if [ -x "$gs_script" ]; then
         local missing_features=0
-        local drm_scan_pos drm_setup_pos
-        drm_scan_pos=$(grep -n 'DRM_CARD_FOUND=0' "$gs_script" | head -n 1 | cut -d: -f1)
-        drm_setup_pos=$(grep -n '/usr/local/bin/ps5-drm-setup' "$gs_script" | head -n 1 | cut -d: -f1)
-        if [ -n "$drm_scan_pos" ] && [ -n "$drm_setup_pos" ] && [ "$drm_setup_pos" -gt "$drm_scan_pos" ]; then
-            say_pass "gamescope-session-ps5 applica il setup DRM dopo la scansione dei connettori"
-        else
-            say_fail "ps5-drm-setup viene eseguito prima della readiness DRM"
-            missing_features=$((missing_features + 1))
-        fi
-        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "WLR_DRM_DEVICES" "GAMESCOPE_DISPLAY_SUPPORTS_HDR=0" "GAMESCOPE_COLOR_MANAGEMENT_DISABLE=1" "RADV_DEBUG=nodcc" "WLR_DRM_NO_MODIFIERS=1" "libps5-drm-8bpc.so" "modetest" "unset LD_PRELOAD" "--prefer-output" "--force-composition" "--disable-layers" "--disable-color-management" "--force-grab-cursor" "--stats-path" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "verify_and_repair_steam" "ps5-drm-setup" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope" "exit 70" "exit 71" "exit 72" "exit 73"; do
+        for feat in "/sys/class/drm/card" "FINAL_OUTPUT_W" "--backend drm" "WLR_DRM_DEVICES" "GAMESCOPE_DISPLAY_SUPPORTS_HDR=0" "GAMESCOPE_COLOR_MANAGEMENT_DISABLE=1" "RADV_DEBUG=nodcc" "WLR_DRM_NO_MODIFIERS=1" "libps5-drm-8bpc.so" "unset LD_PRELOAD" "--prefer-output" "--force-composition" "--disable-layers" "--disable-color-management" "--force-grab-cursor" "--stats-path" "LOG_FILE=" "ps5-gamescope.conf" "STEAM_INSTALLED_FLAG" "-steamos" "verify_and_repair_steam" "dbus-update-activation-environment" "XDG_CURRENT_DESKTOP=gamescope" "exit 70" "exit 71" "exit 72" "exit 73"; do
             if ! grep -q -- "$feat" "$gs_script"; then
                 say_fail "gamescope-session-ps5 privo della funzionalità obbligatoria: $feat"
                 missing_features=$((missing_features + 1))
@@ -1016,13 +1007,13 @@ test_module_system() {
         say_fail "fstab non ottimizzato con parametri di sicurezza"
     fi
 
-    # Verifica cmdline.txt per rimozione risoluzione hardcoded e auto-riparazione fsck
+    # Verifica cmdline.txt per configurazione risoluzione stabile 1080p60 e auto-riparazione fsck
     if [ -f "$MOCK_BOOT/cmdline.txt" ] && \
-       ! grep -q "video=" "$MOCK_BOOT/cmdline.txt" && \
+       grep -q "video=DP-1:1920x1080@60" "$MOCK_BOOT/cmdline.txt" && \
        grep -q "fsck.repair=yes" "$MOCK_BOOT/cmdline.txt"; then
-        say_pass "cmdline.txt: rimossa risoluzione hardcoded video= ed abilitato fsck.repair=yes"
+        say_pass "cmdline.txt: configurato video=DP-1:1920x1080@60 per bridge Panasonic ed abilitato fsck.repair=yes"
     else
-        say_fail "cmdline.txt privo di auto-riparazione fsck o con parametro video= residuo"
+        say_fail "cmdline.txt privo di video=DP-1:1920x1080@60 o fsck.repair=yes"
     fi
 
     # Verifica flush su /boot/efi vfat (idempotente)
@@ -1213,7 +1204,18 @@ test_module_cleanup() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/cleanup.sh"
 
+    # Simula file kwinoutputconfig.json 4K stale
+    mkdir -p "$MOCK_ROOT/home/steam/.config"
+    echo '{"width": 3840, "height": 2160}' > "$MOCK_ROOT/home/steam/.config/kwinoutputconfig.json"
+
     module_cleanup_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    # Verifica rimozione kwinoutputconfig.json 4K stale
+    if [ ! -f "$MOCK_ROOT/home/steam/.config/kwinoutputconfig.json" ]; then
+        say_pass "kwinoutputconfig.json 4K stale rimosso correttamente"
+    else
+        say_fail "kwinoutputconfig.json 4K stale ancora presente"
+    fi
 
     # Verifica rimozione file steam.pid e steam.pipe
     if [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pid" ] && [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pipe" ]; then

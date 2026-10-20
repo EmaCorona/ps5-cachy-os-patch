@@ -78,7 +78,7 @@ Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
 | **`kde`** | [`lib/modules/kde.sh`](lib/modules/kde.sh) | Configura KDE Plasma 6 Wayland con auto-detection della risoluzione nativa del display, switch pulito della sessione con `steamos-session-select` e notifiche desktop di fallback. |
 | **`gamescope`** | [`lib/modules/gamescope.sh`](lib/modules/gamescope.sh) | Avvia Gamescope Gaming Mode con auto-rilevamento dinamico DRM della risoluzione nativa (4K, 1440p, 1080p, Ultrawide), fallback sicuro a 1080p, supporto manifest Steam Deck e priorità real-time (`cap_sys_nice`). |
 | **`session`** | [`lib/modules/session.sh`](lib/modules/session.sh) | Supervisore TTY1: avvio automatico in Gamescope Mode e fallback immediato su KDE Plasma Wayland in caso di crash o errore (< 20s). |
-| **`system`** | [`lib/modules/system.sh`](lib/modules/system.sh) | Rimozione risoluzioni video hardcoded da `cmdline.txt` per consentire l'EDID auto-detection, auto-riparazione filesystem, sudo senza password per `%wheel`, journal persistente, mount fstab sicuro con `flush` e snapshot diagnostici in `ps5-diag/`. |
+| **`system`** | [`lib/modules/system.sh`](lib/modules/system.sh) | Stabilizzazione video del bridge DisplayPort->HDMI Panasonic MN864739 a 1080p60 (148.5 MHz) in `cmdline.txt`, auto-riparazione filesystem, sudo senza password per `%wheel`, journal persistente, mount fstab sicuro con `flush` e snapshot diagnostici in `ps5-diag/`. |
 
 ---
 
@@ -176,8 +176,8 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 - Verifica con `ps5-temp` che l'hardware risponda regolarmente.
 
 ### 2. Risoluzione TV/Monitor e Schermo Nero ("Nessun segnale")
-- **Rilevamento Automatico Dinamico**: Sia **KDE Plasma Wayland** che **Gamescope** rilevano automaticamente la risoluzione nativa e il refresh rate del display collegato interrogando l'EDID/KMS via DRM (supportando nativamente 4K, 1440p, 1080p e formati Ultrawide), grazie alla rimozione automatica da `cmdline.txt` di parametri hardcoded del tipo `video=DP-1:1920x1080@60`.
-- **Fallback di Sicurezza**: In Gamescope, se la query DRM/EDID non restituisce alcuna modalità (es. handshake HDMI o CEC ritardato), il sistema adotta automaticamente un fallback sicuro a 1080p60 evitando schermate nere.
+- **Stabilizzazione Bridge HDMI Panasonic MN864739**: La PS5 instrada internamente il segnale video dalla GPU Oberon a un chip bridge Panasonic DP-to-HDMI. Per evitare che all'avvio a freddo (*cold boot*) il bridge fallisca l'addestramento del link TMDS sui display 4K (che a 594 MHz genera schermo nero o bianco), il modulo `system` configura `video=DP-1:1920x1080@60` in `cmdline.txt`. Questo garantisce un pixel clock stabile a 148.5 MHz al momento dell'accensione.
+- **Enforcement 8bpc / 24bpp**: Sia **KDE Plasma Wayland** (tramite `KWIN_DRM_PREFER_COLOR_DEPTH=24`) sia **Gamescope** (tramite l'intercettore `libps5-drm-8bpc.so`) operano rigorosamente in formato a 8 bit (`DRM_FORMAT_XRGB8888`), evitando i FourCC a 10 bit incompatibili col bridge Panasonic.
 - **Personalizzazione Manuale (Opzionale)**: Se colleghi la PS5 a un display particolare e desideri forzare una risoluzione fissa personalizzata in Gamescope, puoi decommentare e modificare i parametri nel file `/etc/ps5-gamescope.conf`:
   ```ini
   OUTPUT_WIDTH=1920
@@ -201,7 +201,7 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 La sessione predefinita avvia Gamescope direttamente, senza KDE come fase intermedia. Il supervisore effettua polling su `/dev/dri/card0` e sul connettore DRM, richiedendo una modalità valida e campioni stabili. Il polling attende al massimo 30 secondi per default (`PS5_SESSION_DRM_READY_TIMEOUT_SEC=30`); se il display non diventa pronto, il fallback passa a KDE senza avere avviato KDE come sessione intermedia. Impostando `PS5_SESSION_DRM_READY_TIMEOUT_SEC=0` il polling resta illimitato.
 
-L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/analysis/ANALISI-FUNZIONALE-REFACTOR.md).
+L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/analysis/ANALISI-FUNZIONALE-REFACTOR.md), con l'architettura dettagliata della catena video e la roadmap evolutiva descritte in [PS5-DISPLAY-PIPELINE.md](docs/PS5-DISPLAY-PIPELINE.md).
 
 ## 🧪 Suite di Test Automatizzata (Hardware-Free)
 
