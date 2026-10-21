@@ -35,7 +35,7 @@ Opzioni:
   --all                 (Predefinito) Esegue l'intera pipeline di patching
   --module, -m <nome>   Esegue solo il modulo specificato (es: vram, fan, session)
   --list-modules, -l    Elenca tutti i moduli disponibili con descrizione
-  --skip-fsck           Salta il controllo di integrità del filesystem ext4
+  --skip-fsck           Salta i controlli di integrità dei filesystem ext4 e FAT32/vfat
   --dry-run             Esegue il controllo di stato senza apportare modifiche
   --help, -h            Mostra questa guida ed esce
 

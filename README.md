@@ -1,7 +1,7 @@
 # PS5 CachyOS Patch
 
 > [!NOTE]
-> **Hardware e Firmware di Riferimento**: Testato e verificato con successo su **PlayStation 5 Digital Edition** con **firmware 13.60**.
+> **Hardware e Firmware di Riferimento**: **PlayStation 5 Digital Edition**, firmware **13.60**. È la piattaforma di riferimento del progetto, non una garanzia di compatibilità: boot e output video dipendono da kernel, loader, chassis e display.
 
 <br>
 
@@ -155,18 +155,22 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ---
 
-### 4. Integrità Filesystem & Centro Diagnostico (`ps5-diag`)
+### 4. Integrità Filesystem & Centro Diagnostico (`ps5-diag-snapshot` / `ps5-net-diag`)
 
-- **Riparazione Dirty Bit FAT32 (`/boot/efi`)**: Previene il warning kernel `Volume was not properly unmounted. Some data may be corrupt`. All'esecuzione del patcher da PC, `disk_check_boot_fat` esegue `fsck.fat -a` sulla partizione di boot; inoltre in `/etc/fstab` vengono aggiunti i flag `flush,errors=remount-ro` che scrivono immediatamente le tabelle FAT su memoria flash.
-- **Snapshot Diagnostici Consolidati**: i dump sono salvati in `/boot/efi/ps5-diag/` quando la partizione di boot è montata; se non è disponibile, lo snapshot di sistema usa `/var/log/ps5-diag/`. Quando i file risiedono nella partizione di boot, sono consultabili collegando il supporto al PC:
+- **Riparazione Dirty Bit FAT32 (`/boot/efi`)**: durante il patching da PC, `disk_check_boot_fat` tenta di correggere il dirty bit e le incoerenze rilevate con `fsck.fat -a`. Il modulo `system` aggiunge inoltre `flush,errors=remount-ro` a determinate righe di `/etc/fstab`; l'esito dipende dal filesystem e dal modo in cui viene smontato.
+- **Snapshot diagnostici**: `ps5-diag-snapshot` salva gli snapshot di sistema in `/boot/efi/ps5-diag/` se `/boot/efi` è montata, altrimenti usa `/var/log/ps5-diag/`. Il collector rete `ps5-net-diag` cerca i mountpoint `/boot/efi`, `/boot` ed `/efi` e salva `net.txt` nella directory `ps5-diag` individuata. I file disponibili dipendono dal tipo di snapshot e dall'esito delle utility:
 
-| File Diagnostico | Descrizione del Contenuto | Tempistica di Raccolta |
+| File / Directory | Contenuto | Raccolta |
 | :--- | :--- | :--- |
-| `dmesg.txt` | Registro completo dei messaggi del kernel | Boot iniziale e refresh (+100s) |
-| `journal.txt` | Registro completo del journal di systemd | Boot iniziale e refresh (+100s) |
-| `lspci.txt` | Inventario hardware delle periferiche PCIe rilevate | Al boot (`sysinit.target`) |
-| `net.txt` | Stato interfacce di rete, contatori, lease DHCP e test connettività | Post-boot (+90s) |
-| `status.txt` | Snapshot completo (sessioni, DRM, temperature, ventola, servizi, fallback log) | Post-boot (+100s) |
+| `dmesg.txt` | Messaggi del kernel | Snapshot early e full (circa +100 s) |
+| `journal.txt` | Journal del boot corrente | Snapshot early e full (circa +100 s) |
+| `journal-prev.txt` | Journal del boot precedente | Snapshot early e full (circa +100 s) |
+| `ps5-journal.txt` | Voci del journal corrente che corrispondono a `ps5-` | Snapshot early e full (circa +100 s) |
+| `lspci.txt` | Inventario delle periferiche PCIe | Solo snapshot early (`sysinit.target`) |
+| `net.txt` | Interfacce, IP, routing, DNS, connettività, TLS e log rete | Timer rete, circa +90 s |
+| `status.txt` | Sessioni, DRM, temperature, ventola, servizi e log fallback | Solo snapshot full, circa +100 s |
+| `video.txt` | Output di `ps5-video-diag`, se installato | Snapshot early e full |
+| `logs/` | Copia dei log disponibili in `/var/log/ps5/` | Snapshot early e full, se presenti |
 
 ---
 

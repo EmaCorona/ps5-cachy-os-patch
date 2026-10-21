@@ -48,7 +48,7 @@ Queste variabili sono lette a runtime dal servizio se inserite nel suo ambiente;
 
 ## Verifica e limiti
 
-`module_fan_check` controlla l'esistenza e l'eseguibilità del demone e di `ps5-temp`, più la presenza delle unit/regole attese. Non misura gli RPM reali e non verifica la correttezza della curva in uno stress test. Alcuni kernel potrebbero non esporre `target_temp` o file PWM, nel qual caso il codice non può comandare quei percorsi.
+`module_fan_check` controlla soltanto che `ps5-fan-daemon` e `ps5-temp` esistano e siano eseguibili e che la regola udev sia presente; non verifica l'esistenza delle due unit systemd, né misura gli RPM reali o la curva sotto stress. Alcuni kernel potrebbero non esporre `target_temp` o file PWM, nel qual caso il codice non può comandare quei percorsi.
 
 ## Diagnostica
 
