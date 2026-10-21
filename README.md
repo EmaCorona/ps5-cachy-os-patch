@@ -179,9 +179,9 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 - Per tornare manualmente al desktop, usa `steamos-session-select desktop`. Verifica anche lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
 
 ### 2. Risoluzione TV/Monitor e Schermo Nero ("Nessun segnale")
-- **Baseline di avvio per il bridge HDMI Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` come workaround per il cold boot, riducendo la richiesta di link rispetto a 4K60. È una misura di stabilizzazione, non una garanzia universale: limita la modalità DRM esposta al boot e può condizionare la risoluzione massima effettivamente utilizzabile da KDE/Gamescope.
-- **Mitigazione dei formati DRM a 10 bit in Gamescope**: il modulo installa `libps5-drm-8bpc.so`, precaricata nel percorso Gamescope per filtrare i formati a 10 bit e favorire `DRM_FORMAT_XRGB8888`. È un workaround software per il bridge, non un'attivazione di HDR e non una garanzia di compatibilità con tutti i display.
-- **Personalizzazione Manuale (Opzionale)**: Se colleghi la PS5 a un display particolare e desideri forzare una risoluzione fissa personalizzata in Gamescope, puoi decommentare e modificare i parametri nel file `/etc/ps5-gamescope.conf`:
+- **Baseline di avvio HDMI per il bridge Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` per stabilizzare il cold boot, soprattutto durante l'inizializzazione dell'uscita video, riducendo la richiesta di link rispetto a 4K60. È un workaround, non una garanzia: limita le modalità DRM esposte al boot e può ridurre la risoluzione massima utilizzabile in KDE/Gamescope.
+- **Formati DRM a 10 bit in Gamescope**: `libps5-drm-8bpc.so` viene precaricata per filtrare i formati a 10 bit e favorire `DRM_FORMAT_XRGB8888`. È una mitigazione software del bridge, non abilita HDR e non garantisce compatibilità con tutti i display.
+- **Personalizzazione opzionale**: per forzare una risoluzione specifica in Gamescope, decommenta e modifica i parametri in `/etc/ps5-gamescope.conf`:
   ```ini
   PS5_OUTPUT_WIDTH=1920
   PS5_OUTPUT_HEIGHT=1080
