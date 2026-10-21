@@ -231,10 +231,10 @@ I test coprono:
 ---
 
 ## ⚖️ Dichiarazione di Non Affiliazione e Disclaimer Legale
-- **Progetto indipendente e non ufficiale**: `ps5-cachy-os-patch` è un progetto open source amatoriale per ricerca, interoperabilità e amministrazione Linux. Non è affiliato, sponsorizzato, approvato o collegato a Sony Interactive Entertainment Inc. né al team ufficiale di CachyOS.
-- **Marchi registrati**: "PlayStation", "PS5" e i relativi loghi sono marchi di Sony Interactive Entertainment Inc.; gli altri marchi appartengono ai rispettivi proprietari. Sono citati solo per descrivere la compatibilità hardware.
-- **Nessun materiale proprietario o exploit**: il repository contiene script di configurazione testuali e componenti open source conformi alle rispettive licenze. Non include né distribuisce codice per eludere misure tecnologiche di protezione (TPM), exploit, bootloader modificati, chiavi crittografiche o firmware proprietario Sony, né ne promuove l'uso.
-- **Responsabilità dell'utente**: l'utente predispone autonomamente l'installazione Linux e il relativo ambiente di esecuzione. L'uso degli script è sotto la sua esclusiva responsabilità, inclusa la conformità alle leggi vigenti, alle licenze dei componenti e ai termini d'uso dell'hardware.
+- **Progetto indipendente e non ufficiale**: `ps5-cachy-os-patch` è un progetto open source amatoriale per ricerca, interoperabilità e amministrazione Linux. Non è affiliato né approvato da Sony Interactive Entertainment Inc. o dal team ufficiale di CachyOS.
+- **Marchi registrati**: "PlayStation", "PS5" e i relativi loghi sono marchi di Sony Interactive Entertainment Inc.; gli altri marchi appartengono ai rispettivi proprietari. Sono citati per descrivere la compatibilità hardware.
+- **Nessun materiale proprietario o exploit**: il repository contiene script testuali e componenti open source conformi alle rispettive licenze. Non distribuisce né promuove codice per eludere misure tecnologiche di protezione (TPM), exploit, bootloader modificati, chiavi crittografiche o firmware proprietario Sony.
+- **Responsabilità dell'utente**: l'utente predispone autonomamente Linux e il relativo ambiente. È responsabile dell'uso degli script e del rispetto di leggi vigenti, licenze e termini d'uso dell'hardware.
 ---
 
 ## 📄 Licenza
