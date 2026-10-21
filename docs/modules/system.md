@@ -40,7 +40,19 @@ Il parametro `video=DP-1:1920x1080@60` è una scelta conservativa presente nel c
 | `etc/systemd/system/ps5-diag-dump.service` | Snapshot early-boot. |
 | `etc/systemd/system/ps5-diag-snapshot.service`, `ps5-diag-snapshot.timer` | Snapshot completo pianificato a circa 100 secondi dal boot. |
 
-Quando `/boot/efi` è montata, gli snapshot vengono collocati in `/boot/efi/ps5-diag`; il codice usa un percorso sotto `/var/log` come fallback. Il dump early e quello completo possono sovrascrivere i report prodotti dallo snapshot precedente.
+Quando `/boot/efi` è montata, gli snapshot di sistema vengono collocati in `/boot/efi/ps5-diag`; altrimenti usano `/var/log/ps5-diag`. Il dump early e quello completo scrivono alcuni file con lo stesso nome e possono quindi sovrascrivere report precedenti.
+
+### File prodotti dagli snapshot
+
+| File | Contenuto e modalità di raccolta |
+| :--- | :--- |
+| `dmesg.txt`, `journal.txt`, `journal-prev.txt`, `ps5-journal.txt` | Log kernel, journal corrente, journal precedente e voci del journal filtrate per `ps5-`; generati in entrambi i modi (`early` e `full`). |
+| `lspci.txt` | Inventario PCIe, generato solo in modalità `early`. |
+| `status.txt` | Stato servizi falliti, connettori DRM, sessioni, processi, temperature, ventola e log fallback; generato in modalità `full`. |
+| `video.txt` | Output di `ps5-video-diag`, quando l'utility è eseguibile; tentato in entrambe le modalità. |
+| `logs/` | Copia dei file disponibili in `/var/log/ps5/`, se la directory esiste. |
+
+Il file `net.txt` è prodotto separatamente da `ps5-net-diag` del modulo `ethernet`, con timer di circa 90 secondi dal boot.
 
 ## Verifica e limiti
 

@@ -1,7 +1,7 @@
 # Documentazione dei moduli
 
 > [!NOTE]
-> Questa sezione descrive i moduli presenti in `lib/modules/` sul branch `main`. La documentazione è ricavata dal codice degli script: i risultati effettivi dipendono dal kernel Linux, dal firmware disponibile, dallo chassis PS5 e dalla configurazione della distribuzione.
+> Questa sezione descrive i moduli presenti in `lib/modules/` nella revisione del repository associata a questa documentazione. Le schede vanno confrontate con il codice del branch/commit in uso; i risultati effettivi dipendono dal kernel Linux, dal firmware disponibile, dallo chassis PS5 e dalla configurazione della distribuzione.
 
 ## Panoramica
 
