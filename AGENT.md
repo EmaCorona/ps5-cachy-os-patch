@@ -2,6 +2,31 @@
 
 Questo file raccoglie le regole operative condivise per gli agenti AI che analizzano o modificano il repository. Le istruzioni sono organizzate in sezioni indipendenti, così da poterle ampliare nel tempo senza stravolgere la struttura esistente.
 
+## Regola obbligatoria: Gitflow per ogni nuova feature o fix
+
+**Ogni feature o fix deve essere implementata su un branch dedicato. Non sviluppare direttamente su `main` e non integrare il lavoro su `main` senza che l'utente abbia prima testato la modifica e dato un'approvazione esplicita.**
+
+### Flusso operativo obbligatorio
+
+1. **Parti da `main` aggiornato.** Prima di iniziare, recupera lo stato remoto più recente e crea il branch di lavoro a partire da esso.
+2. **Crea un branch con il prefisso corretto.** Usa `feature/<slug-descrittivo>` per una nuova funzionalità e `fix/<slug-descrittivo>` per una correzione. Scegli uno slug breve e specifico, coerente con lo stile Git del repository. Se esiste già un branch per lo stesso lavoro, verifica che sia quello giusto prima di riutilizzarlo.
+3. **Sviluppa esclusivamente sul branch dedicato.** Implementazione, test e documentazione correlata devono essere aggiunti lì. Non fare commit diretti su `main`, non spostare il branch `main` e non integrare in anticipo modifiche solo perché i test automatici passano.
+4. **Mantieni documentazione e test nello stesso lavoro.** Per ogni fix rispetta la regola di documentazione in `docs/fix/` e aggiorna `docs/fix/README.md`; se sono interessati moduli, aggiorna anche le relative schede in `docs/modules/`. Aggiungi o aggiorna i test pertinenti e non dichiarare verifiche mai eseguite.
+5. **Concludi l'implementazione senza fare merge.** Rivedi il diff, esegui le verifiche disponibili e comunica all'utente il branch, il riepilogo delle modifiche e i risultati dei test, distinguendo i test automatici dalle prove richieste sull'hardware reale. Lascia le modifiche sul branch dedicato in attesa che l'utente possa testarle.
+6. **Attendi l'approvazione esplicita dell'utente.** Il merge verso `main` è vietato fino a quando l'utente non ha testato il lavoro e non ha dato chiaramente l'OK all'integrazione. Test verdi, CI superata, una richiesta di implementazione o il silenzio dell'utente non equivalgono ad autorizzazione. Se l'OK non è stato dato, non fare merge, non chiudere il lavoro come integrato e non cancellare il branch.
+7. **Dopo l'OK, prepara l'integrazione.** Controlla se `main` è avanzato nel frattempo. Integra gli eventuali aggiornamenti in modo sicuro, risolvi eventuali conflitti senza perdere il comportamento approvato ed esegui nuovamente i controlli pertinenti prima di procedere.
+8. **Prima di integrare, riduci il lavoro a un solo commit.** Tutti i commit appartenenti alla feature/fix devono essere consolidati in un unico commit che rappresenti l'intero cambiamento approvato. Su `main` deve arrivare un solo commit per quella feature/fix, non la sequenza dei commit intermedi. Usa la modalità di squash/integrrazione equivalente disponibile nel flusso Git del repository e verifica il risultato prima di aggiornare `main`.
+9. **Scrivi un nuovo messaggio di commit descrittivo.** Il messaggio deve seguire lo stile del repository (per esempio `fix(area): descrizione della correzione` oppure `feat(area): descrizione della funzionalità`) e spiegare il risultato ottenuto. **Non scrivere nel titolo o nel corpo che i commit sono stati squashati, accorpati o riscritti**, né indicare quanti commit originali erano presenti. Il messaggio deve descrivere esclusivamente la feature/fix realizzata.
+10. **Verifica il risultato dopo l'integrazione.** Conferma che `main` contenga un solo commit per la modifica, che il messaggio sia pertinente, che documentazione e test siano inclusi e che il branch punti al risultato atteso. Comunica all'utente il commit finale e il link GitHub.
+
+### Regola generale per ogni richiesta di squash
+
+Ogni volta che l'utente chiede di squashare dei commit, applica sempre lo stesso criterio: crea un nuovo commit con un messaggio significativo e coerente con il contenuto effettivo delle modifiche, senza fare alcun riferimento allo squash o alla storia precedente dei commit. Non riutilizzare automaticamente un messaggio che descriva l'operazione Git invece del cambiamento prodotto.
+
+### Eccezioni
+
+Non saltare il branch dedicato o l'attesa di approvazione per comodità o per velocizzare il lavoro. Un'eventuale deroga è consentita soltanto quando l'utente la richiede esplicitamente. Le modifiche al solo documento di istruzioni richieste direttamente dall'utente possono essere applicate al branch su cui l'utente ha chiesto di aggiornarle; questa eccezione non autorizza a sviluppare feature/fix su `main`.
+
 ## Regola obbligatoria: mantenere aggiornata la documentazione dei moduli
 
 **Ogni volta che modifichi un modulo, aggiorna nella stessa modifica anche il relativo file di documentazione.** Questa regola è obbligatoria e si applica a modifiche funzionali, correzioni di bug, refactoring che cambiano il comportamento, aggiunte o rimozioni di opzioni, dipendenze, file generati, servizi o configurazioni.
@@ -15,6 +40,32 @@ Procedura da seguire:
 5. **Verifica il risultato.** Rileggi il diff, controlla i collegamenti Markdown e accertati che il documento descriva il comportamento realmente implementato. Esegui le verifiche disponibili e dichiara chiaramente eventuali test non eseguiti.
 
 Se un modulo non dispone ancora di una scheda documentale, creala in `docs/modules/` seguendo lo stile delle schede esistenti e aggiungila all'indice. Non inventare comportamenti o risultati di test che non siano stati verificati.
+
+## Regola obbligatoria: documentare ogni fix e aggiornare lo storico
+
+**Ogni volta che realizzi una fix, devi documentarla in `docs/fix/` e aggiornare lo storico centrale.** La regola si applica a ogni correzione di bug, comportamento errato, regressione, errore di avvio, problema di compatibilità o caso limite, anche quando la modifica interessa più moduli. Non considerare conclusa una fix finché il codice, la documentazione del modulo interessato e lo storico delle fix non sono coerenti.
+
+### Procedura obbligatoria
+
+1. **Analizza la correzione reale.** Esamina il diff e identifica il sintomo, la causa tecnica supportata dalle evidenze, il comportamento precedente e quello corretto. Non limitarti a riscrivere il messaggio del commit: il testo deve spiegare cosa accadeva e perché la modifica risolve il problema.
+2. **Crea una scheda dedicata per ogni fix logica.** Aggiungi un file Markdown in `docs/fix/`, seguendo struttura, chiarezza e livello di dettaglio delle schede già presenti. Usa il nome `fix-<sha12>-<slug-descrittivo>.md` quando lo SHA del commit di correzione è noto; lo slug deve essere breve, leggibile e specifico. Non accorpare fix indipendenti in una singola scheda.
+3. **Mantieni lo standard documentale esistente.** Includi, quando applicabili:
+   - titolo chiaro che descriva il problema corretto;
+   - SHA completo o abbreviato del commit sorgente con collegamento GitHub, data e file principali coinvolti;
+   - sezione **Problema** che descriva sintomi e impatto prima della fix;
+   - sezione **Causa individuata** che spieghi il motivo tecnico, separando i fatti verificati dalle ipotesi;
+   - sezione **Correzione applicata**, con i passaggi concreti e il comportamento risultante;
+   - sezione **File coinvolti**, preferibilmente in tabella con percorso e responsabilità della modifica;
+   - sezione **Verifica e limiti**, con test effettivamente eseguiti, risultati verificati, ciò che non è stato testato e le dipendenze dall'hardware o dall'ambiente;
+   - collegamento alla fonte primaria (commit/diff) e ai sorgenti correnti pertinenti.
+4. **Aggiorna sempre l'indice dello storico.** Aggiungi una voce in `docs/fix/README.md` con data, commit, descrizione concisa del problema e collegamento alla nuova scheda. Mantieni l'ordine cronologico inverso, evita duplicati e verifica che il collegamento funzioni. Se il file non esiste ancora, crealo con lo stesso stile degli indici già presenti.
+5. **Mantieni aggiornati gli altri documenti interessati.** Applica anche la regola della documentazione dei moduli: aggiorna le schede in `docs/modules/` quando la fix cambia il loro comportamento. Aggiorna `README.md` se cambia una descrizione o una procedura destinata agli utenti. L'indice `docs/fix/README.md` non sostituisce la documentazione specifica dei moduli.
+6. **Gestisci correttamente lo SHA.** Non inventare commit, date, risultati o link e non lasciare placeholder permanenti. Se lo SHA definitivo della correzione non è ancora disponibile, prepara la scheda con il contenuto verificato e completa il riferimento non appena il commit sorgente è definitivo. Poiché un commit non può contenere in modo stabile il proprio SHA nel contenuto che determina quello stesso SHA, quando serve un riferimento esatto organizza la correzione in modo che il commit di codice sia identificabile prima del successivo aggiornamento documentale, oppure aggiungi il riferimento esatto in un commit documentale successivo.
+7. **Verifica prima di concludere.** Controlla la corrispondenza tra scheda e diff, la presenza della voce nell'indice, tutti i link relativi e GitHub, e lo stato finale dei file. Esegui i test disponibili pertinenti alla fix; distingui chiaramente i test automatici simulati dalle prove eseguite su hardware reale e dichiara quelli non eseguiti.
+
+### Requisito di completamento
+
+Una fix è documentata soltanto quando la scheda in `docs/fix/` e la voce in `docs/fix/README.md` sono state aggiunte o aggiornate, la documentazione del modulo interessato è allineata e i riferimenti sono stati verificati. Mantieni il livello di precisione, la struttura e il tono tecnico delle schede già presenti: descrizioni concrete e verificabili, nessuna affermazione non dimostrata e nessun test dichiarato come superato senza averne osservato il risultato.
 
 ## Come estendere questo file
 
