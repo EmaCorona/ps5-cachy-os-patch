@@ -119,7 +119,6 @@ Il modulo `session` installa un supervisore su `tty1` e imposta KDE Plasma come 
                         [ Fallback KDE ]
 ```
 
-- **Cambio volontario Desktop ↔ Gaming Mode**: dalla sessione desktop è possibile richiedere Gamescope con `steamos-session-select gamescope`; per tornare a KDE si usa `steamos-session-select desktop`. Il supervisore pulisce l'ambiente della sessione precedente e registra i passaggi nei log. Il fallback automatico a KDE interviene anche quando Gamescope termina in modo anomalo.
 
 ---
 
