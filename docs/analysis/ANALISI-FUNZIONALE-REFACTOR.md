@@ -203,7 +203,7 @@ Il repository non include il sorgente della versione di Gamescope installata e n
 
 ---
 
-## 16. Risoluzione della Regressione Display e Baseline di Link Sincronizzato 1080p60
+## 16. Mitigazioni per la regressione display e baseline di boot 1080p60
 
 ### 16.1 Analisi Forense della Regressione su KDE e Gamescope
 Le osservazioni raccolte per una configurazione che avviava KDE Plasma e consentiva il passaggio manuale a Gamescope erano compatibili con questa sequenza, senza dimostrarla come causa universale:
