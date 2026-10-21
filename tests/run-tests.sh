@@ -1344,6 +1344,13 @@ test_cli_orchestration() {
         main_cli="$REPO_DIR/ps5-cachy-os-patch.sh"
     fi
 
+    # Verifica permessi di esecuzione sui binari CLI in bin/
+    if [ -x "$main_cli" ] && [ -x "$REPO_DIR/bin/fix_ps5_boot.sh" ]; then
+        say_pass "Permessi di esecuzione presenti sui binari CLI in bin/"
+    else
+        say_fail "Permessi di esecuzione mancanti sui binari CLI in bin/"
+    fi
+
     local help_out
     help_out=$("$main_cli" --help 2>&1 || true)
     if echo "$help_out" | grep -qiE "usage|uso"; then

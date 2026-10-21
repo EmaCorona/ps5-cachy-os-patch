@@ -10,6 +10,7 @@ Le schede seguono lo stile della documentazione del progetto: obiettivo, problem
 
 | Data | Commit | Problema documentato |
 | :--- | :--- | :--- |
+| 21 ottobre 2026 | *in corso* | [Permessi di esecuzione master patcher CLI](fix-cli-permissions.md) |
 | 20 ottobre 2026 | [`881d76f55660`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/881d76f556602b4e507a76c420d2eb95b2bebdb7) | [KWin RA24, modeset atomico e stato obsoleto](fix-881d76f55660-kwin-ra24-modeset.md) |
 | 20 ottobre 2026 | [`3d41ab924438`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/3d41ab924438c9a71f8fab95ac53d44bcad188c8) | [Baseline video 1080p60 e servizio DRM intrusivo](fix-3d41ab924438-display-baseline.md) |
 | 19 ottobre 2026 | [`81f7e93a51a6`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/81f7e93a51a62f323c94765dc6dfb2357c5c1d09) | [Audit USB, FAT32, firmware e sessioni](fix-81f7e93a51a6-usb-audit.md) |
