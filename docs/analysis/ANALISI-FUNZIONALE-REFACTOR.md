@@ -133,11 +133,11 @@ La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`m
 
 ---
 
-# 5. Analisi funzionale: avvio diretto Gamescope con polling DRM a macchina a stati
+# 5. Analisi funzionale: KDE predefinito, Gamescope opzionale e readiness DRM
 
 ## 5.1 Requisito e sintomo
 
-Il cold boot deve avviare Gamescope come prima sessione grafica. KDE Plasma non deve essere avviato né visualizzato per preparare il display. KDE resta disponibile solo quando l'utente sceglie esplicitamente la sessione Desktop o quando il tentativo diretto Gamescope fallisce / un timeout DRM esplicitamente configurato porta al recupero.
+Il comportamento implementato prevede KDE Plasma come sessione grafica predefinita al cold boot; Gamescope è opzionale e viene richiesto dall'utente. Quando la richiesta è `gamescope`, il supervisore attende che il device DRM sia disponibile e che un connettore esponga una modalità valida e stabile prima di avviare il wrapper. Se il gate va in timeout o Gamescope termina in modo anomalo, il supervisore avvia il percorso di recupero KDE.
 
 Il sintomo osservato (KDE → Gamescope funziona, lancio diretto no) è compatibile con una race di inizializzazione DRM/KMS o dell'handshake del bridge DisplayPort-HDMI. Il fatto che la grafica parta dopo KDE indica una possibile dipendenza da uno stato video inizializzato durante il modeset di KWin, ma non ne prova la causa. La fix evita quindi un timer fisso e attende condizioni osservabili prima di lanciare Gamescope.
 
