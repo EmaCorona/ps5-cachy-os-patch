@@ -173,9 +173,8 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 ## 🔍 Risoluzione dei Problemi Comuni (Troubleshooting)
 
 ### 1. Avvio di Gamescope e ritorno a KDE
-- **KDE Plasma è il comportamento predefinito previsto**, non un errore. Per richiedere Gamescope, usa `steamos-session-select gamescope` dalla sessione desktop.
 - Se Gamescope non parte o ritorna a KDE, controlla `~/.gamescope-session.log`, `~/.gamescope-fallback.log` e l'eventuale alert `~/.config/ps5-steam-firstboot-alert.txt`.
-- Per tornare manualmente al desktop, usa `steamos-session-select desktop`. Verifica anche lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
+- Verifica lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
 
 ### 2. Risoluzione TV/Monitor e Schermo Nero ("Nessun segnale")
 - **Baseline di avvio HDMI per il bridge Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` per stabilizzare il cold boot, soprattutto durante l'inizializzazione dell'uscita video, riducendo la richiesta di link rispetto a 4K60. È un workaround, non una garanzia: limita le modalità DRM esposte al boot e può ridurre la risoluzione massima utilizzabile in KDE/Gamescope.
