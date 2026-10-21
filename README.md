@@ -5,14 +5,14 @@
 
 <br>
 
-Raccolta di script di post-installazione, configurazioni di sistema, moduli specializzati e strumenti di diagnostica/ripristino per installazioni **CachyOS Linux x86_64** avviate su **PlayStation 5**. Il repository interviene su un'installazione già predisposta e sui filesystem montati dall'host: non partiziona il disco e non installa la distribuzione.
+Script di post-installazione, configurazione e diagnostica per **CachyOS Linux x86_64 su PlayStation 5**. Opera sui filesystem montati dall'host: non partiziona né installa la distribuzione.
 
-I moduli implementano workaround per alcuni problemi osservati o previsti su Linux per PS5: stabilità del Wi-Fi PCIe e gestione dei driver interni/USB, configurazione della ventola, sincronizzazione dell'orologio per NTP/TLS, profilo Ethernet, valore VRAM, diagnostica display DRM e avvio opzionale di Gamescope con fallback su KDE Plasma. Il comportamento reale dipende da chassis, kernel, driver, firmware, display collegato e file di boot; l'applicazione delle patch non garantisce che ogni problema sia risolto su tutte le configurazioni.
+I moduli includono workaround per Wi-Fi, Ethernet, Bluetooth, ventola, VRAM, sincronizzazione dell'orologio e display DRM, oltre all'avvio opzionale di Gamescope con fallback su KDE Plasma. I risultati dipendono da chassis, kernel, driver, firmware, display e file di boot: le patch non garantiscono compatibilità universale.
 
 <br>
 
 > [!IMPORTANT]
-> **Ambito del Progetto**: Questo repository **non fornisce modifiche alla console, jailbreak, exploit, bootloader alterati, immagini di sistema o distribuzioni Linux pre-confezionate**, né contiene firmware o chiavi proprietarie Sony. Si tratta esclusivamente di una raccolta di **script di post-installazione e configurazione** per rifinire e correggere impostazioni di sistema su una distribuzione standard CachyOS già installata e predisposta autonomamente dall'utente.
+> **Ambito del progetto**: non fornisce jailbreak, exploit, bootloader modificati, immagini Linux, firmware o chiavi proprietarie Sony. Contiene solo **script di post-installazione** per configurare un'installazione CachyOS già predisposta dall'utente.
 
 ---
 
@@ -28,7 +28,7 @@ sudo ./ps5-cachy-os-patch.sh --dry-run   # verifica prima i mount e lo stato dei
 sudo ./ps5-cachy-os-patch.sh             # applica le patch dopo aver controllato l'output
 ```
 
-Il patcher cerca la root CachyOS e la partizione di boot tra i filesystem montati dall'host, usando mount point riconosciuti sotto `/run/media`, `/media` o `/mnt` e indizi quali la root `cachyos` e i file di boot. Controlla sempre l'output di `--dry-run` e assicurati che siano state rilevate soltanto le partizioni desiderate. L'esecuzione normale tenta il controllo/riparazione dei filesystem ext4 e FAT32, crea un backup locale dei file critici in `$HOME/ps5_master_backup`, applica i moduli in sequenza e sincronizza i dischi. Il progetto non crea partizioni: opera su un'installazione Linux già esistente.
+Il patcher individua root CachyOS e boot tra i filesystem montati, ad esempio sotto `/run/media`, `/media` o `/mnt`. Verifica l'output di `--dry-run` prima di procedere. L'esecuzione normale controlla ext4/FAT32, salva i file critici in `$HOME/ps5_master_backup`, applica i moduli e sincronizza i dischi.
 
 ### 2. Ripristino Rapido Boot di Emergenza
 Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è bloccata al 100% o il boot si interrompe a causa di crash nei driver:
@@ -36,7 +36,7 @@ Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è blocca
 ```bash
 sudo ./fix_ps5_boot.sh
 ```
-Questo comando esegue una bonifica mirata: controlla la partizione FAT32 di boot, rimuove lock/stati orfani, riapplica le configurazioni di sistema e rete, imposta il valore VRAM, riconfigura il controllo ventole e ripristina la configurazione KDE/Gamescope/sessione. Non reinstalla Linux e non garantisce la risoluzione di problemi dovuti a kernel, firmware o hardware.
+Controlla la partizione FAT32, rimuove lock e stati orfani e riapplica le configurazioni di sistema, rete, VRAM, ventola e sessione grafica. Non reinstalla Linux né risolve necessariamente problemi di kernel, firmware o hardware.
 
 ### 3. Opzioni Avanzate da Linea di Comando (CLI)
 L'orchestratore modulare supporta l'esecuzione selettiva, verifiche preventive senza scrittura e diagnosi:
@@ -61,9 +61,9 @@ sudo ./ps5-cachy-os-patch.sh --skip-fsck
 
 ## 🧩 Architettura e Moduli del Progetto
 
-Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
-- **`lib/core/`**: Funzioni trasversali di sistema (rilevamento punti di mount e block device, controllo integrità filesystem ext4 e FAT32, backup preventivo e logging standardizzato).
-- **`lib/modules/`**: Moduli specializzati, indipendenti e idempotenti. Ciascun modulo espone le funzioni `module_<nome>_run` e `module_<nome>_check`. Per il funzionamento dettagliato di ogni componente consulta l'[indice della documentazione dei moduli](docs/modules/README.md), con una scheda dedicata a ciascun modulo.
+Il codice è organizzato in `lib/`:
+- **`lib/core/`**: rilevamento mount/device, controlli ext4/FAT32, backup e logging.
+- **`lib/modules/`**: moduli isolati e idempotenti con funzioni `module_<nome>_run` e `module_<nome>_check`. Consulta l'[indice dei moduli](docs/modules/README.md).
 
 ### Mappa dei Moduli Disponibili
 
@@ -83,7 +83,7 @@ Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
 
 ### 📚 Storico delle correzioni
 
-Per ricostruire il problema, la causa tecnica e la soluzione introdotta da ciascun commit di correzione documentato, consulta l'[indice dello storico dei fix](docs/fix/README.md). Ogni scheda rimanda allo SHA originale e descrive i file coinvolti e i limiti delle verifiche.
+Consulta lo [storico dei fix](docs/fix/README.md) per problemi, soluzioni e riferimenti ai commit.
 
 ---
 
@@ -208,26 +208,25 @@ L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/ana
 
 ## 🧪 Suite di Test Automatizzata (Hardware-Free)
 
-Il progetto include una suite di test automatizzati eseguibile in sandbox temporanea senza necessitare dell'hardware PS5. La CI GitHub controlla la sintassi degli script con `bash -n` e avvia poi la suite; questi test non sostituiscono una verifica pratica sulla combinazione specifica di PS5, kernel e display:
+La suite automatizzata gira in sandbox senza PS5. La CI controlla la sintassi e lancia i test, che non sostituiscono prove pratiche su console, kernel e display reali:
 
 ```bash
 bash tests/run-all-tests.sh
 ```
 
-I test convalidano:
-- Sintassi di tutti gli script bash e shell generati (`bash -n` / `sh -n`);
-- Idempotenza (applicazione multipla senza duplicazione di righe o configurazioni);
-- Funzionamento isolato dei moduli VRAM, Ethernet, Wi-Fi, Fan, KDE, Gamescope, Session, System e Cleanup;
-- Auto-rilevamento delle modalità DRM usate da Gamescope e verifica della configurazione video in `cmdline.txt`, inclusa la baseline 1080p60 prevista dal modulo `system`;
-- Simulazione di crash e attivazione del fallback automatico da Gamescope a KDE;
-- Pulizia dei file diagnostici legacy e generazione corretta delle unit systemd.
+I test coprono:
+- Sintassi e idempotenza degli script;
+- Esecuzione isolata dei moduli;
+- Rilevamento DRM e configurazione video di boot;
+- Crash di Gamescope e fallback a KDE;
+- Pulizia dei residui e generazione delle unit systemd.
 
 ---
 
 ## 📋 Requisiti di Sistema
-- **Console Target**: Sony PlayStation 5 (Fat / Slim, Digital o con lettore Blu-ray, predisposta autonomamente dall'utente per l'avvio di kernel Linux).
-- **Storage**: Disco SSD NVMe interno, SSD esterno USB 3.0 o chiavetta USB con installazione CachyOS x86_64 predisposta autonomamente dall'utente.
-- **PC Host di Patching**: Qualsiasi distribuzione Linux con `bash`, `coreutils`, `util-linux` (`lsblk`, `findmnt`, `blkid`), `e2fsprogs` (`e2fsck`), `dosfstools` (`fsck.fat`) e privilegi di `sudo`. Le partizioni della destinazione devono essere accessibili e montate in mount point riconoscibili dallo script.
+- **Console**: PS5 Fat/Slim, Digital o con lettore, predisposta per avviare Linux.
+- **Storage**: NVMe interno, SSD USB o chiavetta con CachyOS x86_64.
+- **Host di patching**: Linux con Bash, coreutils, util-linux, e2fsprogs, dosfstools e `sudo`; le partizioni devono essere montate in percorsi riconoscibili.
 
 ---
 
