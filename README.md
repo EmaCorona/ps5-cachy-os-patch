@@ -190,13 +190,6 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
   PS5_REFRESH_RATE=60
   ```
 
-### 3. La ventola gira al massimo dei giri all'avvio
-- Verifica lo stato del servizio systemd digitando:
-  ```bash
-  systemctl status ps5-fan-daemon.service
-  ```
-- Esegui `ps5-temp` per verificare che i file `/sys/bus/platform/devices/ps5-fan/target_temp` o `/sys/class/hwmon/` siano esposti dal kernel.
-- Se hai modificato il kernel o reinstallato moduli, riesegui `./ps5-cachy-os-patch.sh --module fan`.
 
 ---
 
