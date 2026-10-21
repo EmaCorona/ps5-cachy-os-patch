@@ -1,7 +1,7 @@
 # Modulo `session`
 
 > [!NOTE]
-> Sorgente: [`lib/modules/session.sh`](../../lib/modules/session.sh). La sessione predefinita configurata su `main` è KDE Plasma Desktop. Gamescope viene avviato quando lo si richiede tramite `steamos-session-select gamescope`.
+> Sorgente: [`lib/modules/session.sh`](../../lib/modules/session.sh). La sessione predefinita configurata dal modulo è KDE Plasma Desktop. Gamescope viene avviato quando lo si richiede tramite `steamos-session-select gamescope`.
 
 ## Obiettivo
 

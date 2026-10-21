@@ -3,8 +3,8 @@
 ### Repository: ps5-cachy-os-patch (Ispirato a steam-link-display-adapter)
 
 > **Data:** Ottobre 2026  
-> **Stato del documento:** Implementato e Convalidato  
-> **Branch di riferimento:** `feature/modular-refactor`  
+> **Stato del documento:** Analisi del codice del branch e dei test hardware-free; non equivale a convalida hardware  
+> **Branch di riferimento:** `feature/readme-reduction`  
 > **Riferimento architetturale:** [EmaCorona/steam-link-display-adapter](https://github.com/EmaCorona/steam-link-display-adapter)
 
 ---
@@ -60,7 +60,7 @@ ps5-cachy-os-patch/
 │   └── analysis/
 │       └── ANALISI-FUNZIONALE-REFACTOR.md
 ├── tests/
-│   ├── run-tests.sh               # Suite di test estesa (56 asserzioni automatizzate)
+│   ├── run-tests.sh               # Suite di regressione hardware-free (controlli condizionali)
 │   ├── run-all-tests.sh           # Master test runner con output colorato e riepilogo
 │   └── stubs/                     # Binari stub per isolamento (udevadm, depmod, setcap, ecc.)
 ├── fix_ps5_boot.sh                # Wrapper di compatibilità nella root del repository
@@ -115,7 +115,7 @@ module_<nome>_check() {
 
 La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`mktemp -d`), senza richiedere privilegi di root e senza toccare dischi reali, con stub dedicati per comandi hardware (`udevadm`, `depmod`, `setcap`, `systemctl`, `loginctl`, `dbus-uuidgen`).
 
-### Aree di Test Coperte (56 Asserzioni Totali):
+### Aree di Test Coperte (suite hardware-free):
 1. **Controllo Sintattico (`bash -n` / `sh -n`):** Tutti gli script sorgente e tutti gli script generati a runtime (`ps5-fan-daemon`, `ps5-temp`, `ps5-stage-firmware`, `ps5-network-status`, `ps5-net-diag`, `ps5-bt-quiet`, `ps5-diag-snapshot`, `ps5-boot-cleanup`, `gamescope-session-ps5`, `ps5-tty-session.sh`).
 2. **Modulo Cleanup:** Rimozione corretta file orfani `steam.pid` e `steam.pipe`, eliminazione coredump accumulati, installazione unit `ps5-boot-cleanup.service`.
 3. **Modulo VRAM:** Creazione di `vram.txt` con valore esatto `0x100000000` (4 GB) e verifica di idempotenza.
@@ -133,18 +133,18 @@ La suite di test viene eseguita interamente in uno spazio temporaneo isolato (`m
 
 ---
 
-# 5. Analisi funzionale: avvio diretto Gamescope con polling DRM a macchina a stati
+# 5. Analisi funzionale: KDE predefinito, Gamescope opzionale e readiness DRM
 
 ## 5.1 Requisito e sintomo
 
-Il cold boot deve avviare Gamescope come prima sessione grafica. KDE Plasma non deve essere avviato né visualizzato per preparare il display. KDE resta disponibile solo quando l'utente sceglie esplicitamente la sessione Desktop o quando il tentativo diretto Gamescope fallisce / un timeout DRM esplicitamente configurato porta al recupero.
+Il comportamento implementato prevede KDE Plasma come sessione grafica predefinita al cold boot; Gamescope è opzionale e viene richiesto dall'utente. Quando la richiesta è `gamescope`, il supervisore attende che il device DRM sia disponibile e che un connettore esponga una modalità valida e stabile prima di avviare il wrapper. Se il gate va in timeout o Gamescope termina in modo anomalo, il supervisore avvia il percorso di recupero KDE.
 
 Il sintomo osservato (KDE → Gamescope funziona, lancio diretto no) è compatibile con una race di inizializzazione DRM/KMS o dell'handshake del bridge DisplayPort-HDMI. Il fatto che la grafica parta dopo KDE indica una possibile dipendenza da uno stato video inizializzato durante il modeset di KWin, ma non ne prova la causa. La fix evita quindi un timer fisso e attende condizioni osservabili prima di lanciare Gamescope.
 
 ## 5.2 Punti d'intervento
 
 - `lib/modules/session.sh` genera `/etc/profile.d/ps5-tty-session.sh`, supervisore della sessione utente su tty1. È il punto corretto per modellare le transizioni ed evitare l'avvio prematuro.
-- `lib/modules/gamescope.sh` genera `/usr/bin/gamescope-session-ps5`. In precedenza `ps5-drm-setup` veniva eseguito prima della scansione dei connettori; il wrapper ora applica `max bpc=8` solo dopo aver individuato una modalità valida.
+- `lib/modules/gamescope.sh` genera `/usr/bin/gamescope-session-ps5` e installa `ps5-drm-setup` come utility separata. Il modulo rimuove l'unità `ps5-drm-setup.service`; il wrapper attuale non invoca automaticamente la utility.
 - `lib/modules/kde.sh` non viene modificato. Il nuovo percorso Gamescope non usa KDE come bootstrap.
 - Un connettore `connected` da solo non prova che il segnale fisico sia già attivo. Prima del compositor, `enabled` può non essere ancora attivo; il gate controlla quindi il device DRM, lo stato connected e una modalità valida/stabile.
 
@@ -183,45 +183,45 @@ Parametri:
 
 ## 5.4 Correzione nel wrapper Gamescope
 
-Le configurazioni di sistema e utente vengono lette prima della scansione DRM. `ps5-drm-setup` viene eseguito dopo che il wrapper ha trovato una modalità valida, invece che all'inizio del processo. La macchina a stati attende la stabilità e il wrapper mantiene una seconda verifica locale.
+Il wrapper legge le configurazioni di sistema e utente, esegue la scansione DRM e mantiene una verifica locale, ma non invoca automaticamente `ps5-drm-setup`. La utility resta installata per un eventuale uso manuale; la macchina a stati del supervisore attende una modalità DRM valida e stabile prima di avviare Gamescope.
 
 ## 5.5 Test e limiti
 
-La suite hardware-free estesa verifica la generazione della macchina a stati, il polling su sysfs simulato, l'ordine tra readiness e lancio Gamescope, il timeout configurabile e l'ordine del setup DRM. I test simulati non possono provare il modeset fisico della PS5: se il gate passa ma resta lo schermo nero, vanno distinti problemi di readiness da errori di presentazione/scanout usando `~/.gamescope-session.log`, `~/.gamescope.log` e `/var/log/ps5-drm-setup.log`.
+La suite hardware-free verifica la generazione della macchina a stati, il polling su sysfs simulato, la readiness prima del lancio Gamescope, il timeout configurabile e il comportamento della utility DRM con `proptest` simulato. Non verifica un'invocazione automatica di `ps5-drm-setup` dal wrapper, che il codice attuale non esegue, e non può provare il modeset fisico della PS5. Se il gate passa ma resta lo schermo nero, distinguere un problema di readiness da un errore di presentazione/scanout tramite `~/.gamescope-session.log`, `~/.gamescope.log` e `/var/log/ps5-drm-setup.log`.
 
 ---
 
-## 15. Risoluzione Definitiva: Intercettore KMS 8bpc (`libps5-drm-8bpc.so`) e Link Priming Atomico
+## 15. Mitigazione del formato DRM: intercettore KMS 8bpc (`libps5-drm-8bpc.so`)
 
-### 15.1 Causa Radice: Saturazione TMDS HDMI 2.0 (10bpc XR30 vs 8bpc XR24)
-Dall'ispezione comparativa tra KDE Plasma e Gamescope è emerso che KDE funzionava perché KWin applicava `KWIN_DRM_PREFER_COLOR_DEPTH=24`, imponendo l'uso di `DRM_FORMAT_XRGB8888` (24bpp / 8bpc). A 4K 60Hz (`3840x2160@60Hz`), un segnale a 8bpc genera un pixel clock TMDS di **594 MHz** ($\le 600$ MHz, limite fisico dello standard HDMI 2.0 sul bridge Panasonic MN864739).
-Gamescope all'avvio a freddo ignora le variabili di KWin e la proprietà connettore `max bpc=8`, selezionando incondizionatamente in `src/Backends/DRMBackend.cpp:1640` il formato a 10 bit `DRM_FORMAT_XRGB2101010` (`XR30`). A 4K60, 10bpc richiede **742.5 MHz** di TMDS clock, saturando la banda del bridge e provocando schermo nero a fronte di audio e controller perfettamente funzionanti.
+### 15.1 Ipotesi tecnica: differenze di formato e banda video
+L'ipotesi esplorata è una differenza nella scelta dei formati DRM tra KWin e Gamescope: il modulo configura KWin con `KWIN_DRM_PREFER_COLOR_DEPTH=24` e il codice di Gamescope usa uno shim per filtrare alcuni formati a 10 bit. A `3840x2160@60Hz`, i requisiti di clock/banda dipendono da formato colore e modalità di trasporto; tali valori sono utili per l'analisi del link, ma non dimostrano da soli la causa di uno schermo nero.
+Il repository non include il sorgente della versione di Gamescope installata e non può provare che ogni build scelga sempre `DRM_FORMAT_XRGB2101010` o che la larghezza di banda del bridge sia la causa unica. La diagnosi va confermata con log, modalità DRM effettivamente esposte e prove sull'hardware utilizzato.
 
 ### 15.2 Architettura Correttiva
-1. **Compilazione ed Iniezione di `libps5-drm-8bpc.so`:** Intercettore C leggero compilato in `/usr/local/lib/` e caricato via `LD_PRELOAD` esclusivamente per Gamescope. Intercetta `drmModeGetPlane` per rimuovere i FourCC a 10 bit (`XR30`, `AR30`, `XB30`, `AB30`) e `drmGetCap` per azzerare `DRM_CAP_ADDFB2_MODIFIERS`. Gamescope ripiega nativamente su `DRM_FORMAT_XRGB8888` (24bpp / 8bpc).
-2. **Isolamento dell'Ambiente Steam:** Disattivazione di `LD_PRELOAD` (`unset LD_PRELOAD`) nel subshell di esecuzione di `/usr/bin/steam`, garantendo integrità a Steam e ai giochi Proton.
+1. **Compilazione e precaricamento di `libps5-drm-8bpc.so`:** lo shim caricato via `LD_PRELOAD` per Gamescope filtra alcuni FourCC a 10 bit e risponde con valore 0 a `DRM_CAP_ADDFB2_MODIFIERS`. L'obiettivo è favorire un percorso compatibile a 8 bit; il formato risultante dipende anche dai formati esposti da driver/plane e non è garantito su ogni build.
+2. **Isolamento dell'ambiente Steam:** il subshell di Steam rimuove `LD_PRELOAD` per evitare di propagare lo shim al runtime Steam/Proton; questo riduce l'ambito dell'intercettazione ma non sostituisce verifiche di compatibilità.
 
 ---
 
-## 16. Risoluzione della Regressione Display e Baseline di Link Sincronizzato 1080p60
+## 16. Mitigazioni per la regressione display e baseline di boot 1080p60
 
 ### 16.1 Analisi Forense della Regressione su KDE e Gamescope
-Quando la console avviava correttamente KDE Plasma e permetteva lo switch manuale a Gamescope:
+Le osservazioni raccolte per una configurazione che avviava KDE Plasma e consentiva il passaggio manuale a Gamescope erano compatibili con questa sequenza, senza dimostrarla come causa universale:
 1. La riga di comando del kernel in `/boot/cmdline.txt` conteneva `video=DP-1:1920x1080@60`.
-2. Il driver `amdgpu` inizializzava il trasmettitore DisplayPort interno e il bridge **Panasonic MN864739** a **1920x1080@60Hz** (pixel clock TMDS di soli **148.5 MHz**). A questa frequenza standard, il bridge aggancia stabilmente il link fisico HDMI con qualsiasi TV o monitor senza richiedere scrambler HDMI 2.0 ad alta velocità o comandi proprietari Sony.
-3. KWin utilizzava `KWIN_DRM_PREFER_COLOR_DEPTH=24` e `KWIN_FORCE_ASSUME_HDR_SUPPORT=0`, proiettando a schermo 8bpc pulito. Lo switch a Gamescope ereditava un link fisico già agganciato e addestrato.
+2. La baseline 1920x1080@60Hz corrisponde a un pixel clock di 148,5 MHz e riduce la richiesta rispetto a 4K60. Questo può agevolare la compatibilità del link ma non garantisce il segnale con ogni TV/monitor.
+3. Il modulo configura KWin con `KWIN_DRM_PREFER_COLOR_DEPTH=24` e `KWIN_FORCE_ASSUME_HDR_SUPPORT=0`; l'effettiva negoziazione del formato e del link va comunque verificata sul sistema.
 
-Con il commit `40e1716`:
-1. La rimozione di `video=...` da `cmdline.txt` ha portato `amdgpu` ad adottare la risoluzione EDID nativa del televisore 4K (`Beyond TV`: **3840x2160@60Hz** a **594.000 MHz**).
-2. A 594 MHz, il bridge Panasonic fallisce l'addestramento del link TMDS da freddo (*cold boot*), generando schermo nero o bianco sia su Gamescope che su KDE.
-3. Inoltre, il servizio `ps5-drm-setup.service` introdotto a `sysinit.target` invocava `proptest` a basso livello, perturbando lo stato KMS atomico prima dell'avvio del compositor.
-4. KWin aveva infine salvato la modalità 4K in `kwinoutputconfig.json`, impedendo il ritorno automatico a 1080p.
+Nel confronto storico associato al commit `40e1716`, le modifiche erano compatibili con queste possibili concause, che non vanno lette come una diagnosi hardware provata:
+1. La rimozione di `video=...` da `cmdline.txt` avrebbe consentito ad `amdgpu` di selezionare la modalità nativa EDID, per esempio 3840x2160@60Hz su un display 4K.
+2. Una modalità con maggiore richiesta di banda può contribuire alla perdita del segnale con un bridge non configurato come previsto; per confermare la causa servono log e prove sul sistema reale.
+3. L'unità storica `ps5-drm-setup.service` eseguiva `proptest` in early boot e poteva interferire con lo stato KMS; il codice attuale la rimuove ma conserva l'utility separata.
+4. Una modalità 4K persistita in `kwinoutputconfig.json` poteva ostacolare un ritorno alla baseline 1080p.
 
-### 16.2 Architettura Risolutiva Definitiva
-1. **Ripristino del Baseline Kernel 1080p60 (`lib/modules/system.sh`):** Configurazione automatica di `video=DP-1:1920x1080@60` in `/boot/cmdline.txt`. Il bridge si aggancia solidamente a 148.5 MHz al primo istante di boot.
-2. **Bonifica del Servizio Precoce (`lib/modules/gamescope.sh`):** Disattivazione e rimozione di `ps5-drm-setup.service` da `sysinit.target.wants` per proteggere lo stato KMS atomico. Rimozione di `modetest` link priming ridondante.
-3. **Bonifica Configurazioni 4K Stale (`lib/modules/cleanup.sh`, `lib/modules/kde.sh`):** Eliminazione preventiva di `kwinoutputconfig.json` per ripristinare la modalità 1080p60 nativa del link.
-4. **Enforcement 8bpc Uniforme:** Mantenimento di `KWIN_DRM_PREFER_COLOR_DEPTH=24` per KDE e dell'intercettore `libps5-drm-8bpc.so` via `LD_PRELOAD` per Gamescope, garantendo che nessuno dei due ambienti richieda formati a 10 bit incompatibili col bridge.
+### 16.2 Mitigazioni attualmente implementate
+1. **Baseline kernel 1080p60 (`lib/modules/system.sh`):** il patcher scrive `video=DP-1:1920x1080@60` in `cmdline.txt` per ridurre la richiesta del link al boot; l'esito video resta da verificare per ciascun display.
+2. **Rimozione dell'unità early-boot (`lib/modules/gamescope.sh`):** l'unità `ps5-drm-setup.service` e il relativo symlink vengono rimossi. La utility resta installata per uso manuale e il wrapper non la esegue automaticamente.
+3. **Pulizia della modalità KWin obsoleta (`lib/modules/cleanup.sh`, `lib/modules/kde.sh`):** il modulo rimuove `kwinoutputconfig.json` per evitare che una modalità persistita interferisca con il tentativo di avvio a 1080p60.
+4. **Preferenza per 8 bpc:** KWin viene configurato con `KWIN_DRM_PREFER_COLOR_DEPTH=24` e Gamescope usa lo shim `libps5-drm-8bpc.so`; sono mitigazioni software, non una garanzia che ogni driver/plane selezioni un formato valido.
 
 ### 16.3 Roadmap Evolutiva della Pipeline Display PS5
 Per la trattazione tecnica estesa della catena video (bridge Panasonic MN864739, DCN 2.0.1 e roadmap verso 4K/10-bit/HDR), fare riferimento a [PS5-DISPLAY-PIPELINE.md](../PS5-DISPLAY-PIPELINE.md):

@@ -1,18 +1,18 @@
 # PS5 CachyOS Patch
 
 > [!NOTE]
-> **Hardware e Firmware di Riferimento**: Testato e verificato con successo su **PlayStation 5 Digital Edition** con **firmware 13.60**.
+> **Hardware e Firmware di Riferimento**: **PlayStation 5 Digital Edition**, firmware **13.60**. È la piattaforma di riferimento del progetto, non una garanzia di compatibilità: boot e output video dipendono da kernel, loader, chassis e display.
 
 <br>
 
-Raccolta di script di post-installazione, configurazioni di sistema, moduli specializzati e strumenti di diagnostica/ripristino per installazioni **CachyOS Linux x86_64** avviate su **PlayStation 5**. Il repository interviene su un'installazione già predisposta e sui filesystem montati dall'host: non partiziona il disco e non installa la distribuzione.
+Script di post-installazione, configurazione e diagnostica per **CachyOS Linux x86_64 su PlayStation 5**. Opera sui filesystem montati dall'host: non partiziona né installa la distribuzione.
 
-I moduli implementano workaround per alcuni problemi osservati o previsti su Linux per PS5: stabilità del Wi-Fi PCIe e gestione dei driver interni/USB, configurazione della ventola, sincronizzazione dell'orologio per NTP/TLS, profilo Ethernet, valore VRAM, diagnostica display DRM e avvio opzionale di Gamescope con fallback su KDE Plasma. Il comportamento reale dipende da chassis, kernel, driver, firmware, display collegato e file di boot; l'applicazione delle patch non garantisce che ogni problema sia risolto su tutte le configurazioni.
+I moduli includono workaround per Wi-Fi, Ethernet, Bluetooth, ventola, VRAM, sincronizzazione dell'orologio e display DRM, oltre all'avvio opzionale di Gamescope con fallback su KDE Plasma. I risultati dipendono da chassis, kernel, driver, firmware, display e file di boot: le patch non garantiscono compatibilità universale.
 
 <br>
 
 > [!IMPORTANT]
-> **Ambito del Progetto**: Questo repository **non fornisce modifiche alla console, jailbreak, exploit, bootloader alterati, immagini di sistema o distribuzioni Linux pre-confezionate**, né contiene firmware o chiavi proprietarie Sony. Si tratta esclusivamente di una raccolta di **script di post-installazione e configurazione** per rifinire e correggere impostazioni di sistema su una distribuzione standard CachyOS già installata e predisposta autonomamente dall'utente.
+> **Ambito del progetto**: non fornisce jailbreak, exploit, bootloader modificati, immagini Linux, firmware o chiavi proprietarie Sony. Contiene solo **script di post-installazione** per configurare un'installazione CachyOS già predisposta dall'utente.
 
 ---
 
@@ -28,7 +28,7 @@ sudo ./ps5-cachy-os-patch.sh --dry-run   # verifica prima i mount e lo stato dei
 sudo ./ps5-cachy-os-patch.sh             # applica le patch dopo aver controllato l'output
 ```
 
-Il patcher cerca la root CachyOS e la partizione di boot tra i filesystem montati dall'host, usando mount point riconosciuti sotto `/run/media`, `/media` o `/mnt` e indizi quali la root `cachyos` e i file di boot. Controlla sempre l'output di `--dry-run` e assicurati che siano state rilevate soltanto le partizioni desiderate. L'esecuzione normale tenta il controllo/riparazione dei filesystem ext4 e FAT32, crea un backup locale dei file critici in `$HOME/ps5_master_backup`, applica i moduli in sequenza e sincronizza i dischi. Il progetto non crea partizioni: opera su un'installazione Linux già esistente.
+Il patcher individua root CachyOS e boot tra i filesystem montati, ad esempio sotto `/run/media`, `/media` o `/mnt`. Verifica l'output di `--dry-run` prima di procedere. L'esecuzione normale controlla ext4/FAT32, salva i file critici in `$HOME/ps5_master_backup`, applica i moduli e sincronizza i dischi.
 
 ### 2. Ripristino Rapido Boot di Emergenza
 Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è bloccata al 100% o il boot si interrompe a causa di crash nei driver:
@@ -36,7 +36,7 @@ Se la PS5 non mostra segnale video a schermo ("No Signal"), la ventola è blocca
 ```bash
 sudo ./fix_ps5_boot.sh
 ```
-Questo comando esegue una bonifica mirata: controlla la partizione FAT32 di boot, rimuove lock/stati orfani, riapplica le configurazioni di sistema e rete, imposta il valore VRAM, riconfigura il controllo ventole e ripristina la configurazione KDE/Gamescope/sessione. Non reinstalla Linux e non garantisce la risoluzione di problemi dovuti a kernel, firmware o hardware.
+Controlla la partizione FAT32, rimuove lock e stati orfani e riapplica le configurazioni di sistema, rete, VRAM, ventola e sessione grafica. Non reinstalla Linux né risolve necessariamente problemi di kernel, firmware o hardware.
 
 ### 3. Opzioni Avanzate da Linea di Comando (CLI)
 L'orchestratore modulare supporta l'esecuzione selettiva, verifiche preventive senza scrittura e diagnosi:
@@ -50,7 +50,7 @@ sudo ./ps5-cachy-os-patch.sh --module fan
 sudo ./ps5-cachy-os-patch.sh --module session
 sudo ./ps5-cachy-os-patch.sh --module wifi
 
-# Modalità Dry-Run (ispezione dello stato corrente senza effettuare scritture su disco)
+# Modalità Dry-Run (controlla lo stato senza applicare le configurazioni dei moduli; i log possono essere aggiornati)
 sudo ./ps5-cachy-os-patch.sh --dry-run
 
 # Salta i controlli fsck su ext4 e FAT32/vfat (solo se hai già verificato i filesystem)
@@ -61,9 +61,9 @@ sudo ./ps5-cachy-os-patch.sh --skip-fsck
 
 ## 🧩 Architettura e Moduli del Progetto
 
-Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
-- **`lib/core/`**: Funzioni trasversali di sistema (rilevamento punti di mount e block device, controllo integrità filesystem ext4 e FAT32, backup preventivo e logging standardizzato).
-- **`lib/modules/`**: Moduli specializzati, indipendenti e idempotenti. Ciascun modulo espone le funzioni `module_<nome>_run` e `module_<nome>_check`. Per il funzionamento dettagliato di ogni componente consulta l'[indice della documentazione dei moduli](docs/modules/README.md), con una scheda dedicata a ciascun modulo.
+Il codice è organizzato in `lib/`:
+- **`lib/core/`**: rilevamento mount/device, controlli ext4/FAT32, backup e logging.
+- **`lib/modules/`**: moduli isolati e idempotenti con funzioni `module_<nome>_run` e `module_<nome>_check`. Consulta l'[indice dei moduli](docs/modules/README.md).
 
 ### Mappa dei Moduli Disponibili
 
@@ -83,7 +83,7 @@ Il progetto adotta un'architettura rigorosamente modulare in `lib/`:
 
 ### 📚 Storico delle correzioni
 
-Per ricostruire il problema, la causa tecnica e la soluzione introdotta da ciascun commit di correzione documentato, consulta l'[indice dello storico dei fix](docs/fix/README.md). Ogni scheda rimanda allo SHA originale e descrive i file coinvolti e i limiti delle verifiche.
+Consulta lo [storico dei fix](docs/fix/README.md) per problemi, soluzioni e riferimenti ai commit.
 
 ---
 
@@ -119,13 +119,12 @@ Il modulo `session` installa un supervisore su `tty1` e imposta KDE Plasma come 
                         [ Fallback KDE ]
 ```
 
-- **Cambio volontario Desktop ↔ Gaming Mode**: dalla sessione desktop è possibile richiedere Gamescope con `steamos-session-select gamescope`; per tornare a KDE si usa `steamos-session-select desktop`. Il supervisore pulisce l'ambiente della sessione precedente e registra i passaggi nei log. Il fallback automatico a KDE interviene anche quando Gamescope termina in modo anomalo.
 
 ---
 
-### 2. Raffreddamento Dinamico Continuo a 12 Zone ("Ultra-Silent Continuous 1°C")
+### 2. Raffreddamento Dinamico Continuo a 12 Zone
 
-Il demone `ps5-fan-daemon` usa il sensore hwmon con la temperatura più alta disponibile e calcola un target continuo al singolo grado (`1°C`), con isteresi di 2°C e limitatore di discesa graduale (*anti-heat-soak*). Scrive il target nel controller PS5 quando esposto e usa il PWM hwmon come percorso alternativo. Le percentuali nella tabella sono stime del profilo, non misure garantite degli RPM: verifica sempre temperatura e risposta effettive sulla tua console.
+Il demone `ps5-fan-daemon` regola il target sulla temperatura hwmon più alta, con passi di 1°C, isteresi di 2°C e discesa graduale (*anti-heat-soak*). Usa il controller PS5 o il PWM hwmon. Le percentuali sono indicative, non RPM garantiti.
 
 | Zona | Temperatura hwmon più alta letta | Target Servo Continuo | Regime Ventola Stimato | Fallback PWM (`45-255`) | Scenario d'Uso Tipico |
 | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -148,40 +147,43 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ### 3. Rete, Sincronizzazione Orologio RTC/TLS e Wi-Fi
 
-- **Sincronizzazione orologio / TLS**: il modulo `ethernet` prepara i file di stato dell'orologio (`/usr/lib/clock-epoch` e `/var/lib/systemd/timesync/clock`), configura `systemd-timesyncd` e i server NTP e installa un dispatcher NetworkManager che forza un tentativo di sincronizzazione quando la connessione sale. Se NTP non riesce, prova a ricavare l'ora dall'header HTTP `Date`. Il recupero dipende dalla disponibilità della rete e dei server raggiungibili.
+- **Sincronizzazione orologio / TLS**: il modulo `ethernet` prepara i file di stato (`/usr/lib/clock-epoch` e `/var/lib/systemd/timesync/clock`), configura `systemd-timesyncd` e NTP e installa un dispatcher NetworkManager che tenta la sincronizzazione quando la connessione sale. Se NTP fallisce, prova a ricavare l'ora dall'header HTTP `Date`. Il recupero dipende dalla disponibilità della rete e dei server raggiungibili.
 
-- **Wi-Fi interno e dongle USB**: il modulo `wifi` rileva il percorso hardware e mette in staging il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e` considerato instabile per il target e non tratta il chip MediaTek come se fosse il NXP IW620; il supporto ai dongle USB viene preservato. La presenza del firmware richiesto rimane una precondizione per caricare il driver NXP.
+- **Wi-Fi interno e dongle USB**: `wifi` rileva il percorso hardware e prepara il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e`, considerato instabile sul target, distingue NXP da MediaTek e mantiene il supporto ai dongle USB. Il firmware corretto è necessario per caricare il driver NXP.
 
 - **Doppio controller Bluetooth**: il modulo `bluetooth` installa un servizio firmware e `ps5-bt-quiet`, che esamina i controller esposti dal kernel e tenta di disattivare l'interfaccia fantasma e attivare quella valida quando può distinguerle.
 
 ---
 
-### 4. Integrità Filesystem & Centro Diagnostico (`ps5-diag`)
+### 4. Integrità Filesystem & Centro Diagnostico (`ps5-diag-snapshot` / `ps5-net-diag`)
 
-- **Riparazione Dirty Bit FAT32 (`/boot/efi`)**: Previene il warning kernel `Volume was not properly unmounted. Some data may be corrupt`. All'esecuzione del patcher da PC, `disk_check_boot_fat` esegue `fsck.fat -a` sulla partizione di boot; inoltre in `/etc/fstab` vengono aggiunti i flag `flush,errors=remount-ro` che scrivono immediatamente le tabelle FAT su memoria flash.
-- **Snapshot Diagnostici Consolidati**: i dump sono salvati in `/boot/efi/ps5-diag/` quando la partizione di boot è montata; se non è disponibile, lo snapshot di sistema usa `/var/log/ps5-diag/`. Quando i file risiedono nella partizione di boot, sono consultabili collegando il supporto al PC:
+- **Riparazione Dirty Bit FAT32 (`/boot/efi`)**: durante il patching da PC, `disk_check_boot_fat` tenta di correggere il dirty bit e le incoerenze rilevate con `fsck.fat -a`. Il modulo `system` aggiunge inoltre `flush,errors=remount-ro` a determinate righe di `/etc/fstab`; l'esito dipende dal filesystem e dal modo in cui viene smontato.
+- **Snapshot diagnostici**: `ps5-diag-snapshot` salva gli snapshot di sistema in `/boot/efi/ps5-diag/` se `/boot/efi` è montata, altrimenti usa `/var/log/ps5-diag/`. Il collector rete `ps5-net-diag` cerca i mountpoint `/boot/efi`, `/boot` ed `/efi` e salva `net.txt` nella directory `ps5-diag` individuata. I file disponibili dipendono dal tipo di snapshot e dall'esito delle utility:
 
-| File Diagnostico | Descrizione del Contenuto | Tempistica di Raccolta |
+| File / Directory | Contenuto | Raccolta |
 | :--- | :--- | :--- |
-| `dmesg.txt` | Registro completo dei messaggi del kernel | Boot iniziale e refresh (+100s) |
-| `journal.txt` | Registro completo del journal di systemd | Boot iniziale e refresh (+100s) |
-| `lspci.txt` | Inventario hardware delle periferiche PCIe rilevate | Al boot (`sysinit.target`) |
-| `net.txt` | Stato interfacce di rete, contatori, lease DHCP e test connettività | Post-boot (+90s) |
-| `status.txt` | Snapshot completo (sessioni, DRM, temperature, ventola, servizi, fallback log) | Post-boot (+100s) |
+| `dmesg.txt` | Messaggi del kernel | Snapshot early e full (circa +100 s) |
+| `journal.txt` | Journal del boot corrente | Snapshot early e full (circa +100 s) |
+| `journal-prev.txt` | Journal del boot precedente | Snapshot early e full (circa +100 s) |
+| `ps5-journal.txt` | Voci del journal corrente che corrispondono a `ps5-` | Snapshot early e full (circa +100 s) |
+| `lspci.txt` | Inventario delle periferiche PCIe | Solo snapshot early (`sysinit.target`) |
+| `net.txt` | Interfacce, IP, routing, DNS, connettività, TLS e log rete | Timer rete, circa +90 s |
+| `status.txt` | Sessioni, DRM, temperature, ventola, servizi e log fallback | Solo snapshot full, circa +100 s |
+| `video.txt` | Output di `ps5-video-diag`, se installato | Snapshot early e full |
+| `logs/` | Copia dei log disponibili in `/var/log/ps5/` | Snapshot early e full, se presenti |
 
 ---
 
 ## 🔍 Risoluzione dei Problemi Comuni (Troubleshooting)
 
 ### 1. Avvio di Gamescope e ritorno a KDE
-- **KDE Plasma è il comportamento predefinito previsto**, non un errore. Per richiedere Gamescope, usa `steamos-session-select gamescope` dalla sessione desktop.
 - Se Gamescope non parte o ritorna a KDE, controlla `~/.gamescope-session.log`, `~/.gamescope-fallback.log` e l'eventuale alert `~/.config/ps5-steam-firstboot-alert.txt`.
-- Per tornare manualmente al desktop, usa `steamos-session-select desktop`. Verifica anche lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
+- Verifica lo stato DRM e la disponibilità della rete se il primo avvio di Steam resta incompleto; `ps5-temp` consente di controllare i sensori termici.
 
 ### 2. Risoluzione TV/Monitor e Schermo Nero ("Nessun segnale")
-- **Baseline di avvio per il bridge HDMI Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` come workaround per il cold boot, riducendo la richiesta di link rispetto a 4K60. È una misura di stabilizzazione, non una garanzia universale: limita la modalità DRM esposta al boot e può condizionare la risoluzione massima effettivamente utilizzabile da KDE/Gamescope.
-- **Mitigazione dei formati DRM a 10 bit in Gamescope**: il modulo installa `libps5-drm-8bpc.so`, precaricata nel percorso Gamescope per filtrare i formati a 10 bit e favorire `DRM_FORMAT_XRGB8888`. È un workaround software per il bridge, non un'attivazione di HDR e non una garanzia di compatibilità con tutti i display.
-- **Personalizzazione Manuale (Opzionale)**: Se colleghi la PS5 a un display particolare e desideri forzare una risoluzione fissa personalizzata in Gamescope, puoi decommentare e modificare i parametri nel file `/etc/ps5-gamescope.conf`:
+- **Baseline di avvio HDMI per il bridge Panasonic MN864739**: il modulo `system` aggiunge `video=DP-1:1920x1080@60` a `cmdline.txt` per stabilizzare il cold boot, soprattutto durante l'inizializzazione dell'uscita video, riducendo la richiesta di link rispetto a 4K60. È un workaround, non una garanzia: limita le modalità DRM esposte al boot e può ridurre la risoluzione massima utilizzabile in KDE/Gamescope.
+- **Formati DRM a 10 bit in Gamescope**: `libps5-drm-8bpc.so` viene precaricata per filtrare i formati a 10 bit e favorire `DRM_FORMAT_XRGB8888`. È una mitigazione software del bridge, non abilita HDR e non garantisce compatibilità con tutti i display.
+- **Personalizzazione opzionale**: per forzare una risoluzione specifica in Gamescope, decommenta e modifica i parametri in `/etc/ps5-gamescope.conf`:
   ```ini
   PS5_OUTPUT_WIDTH=1920
   PS5_OUTPUT_HEIGHT=1080
@@ -190,13 +192,6 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
   PS5_REFRESH_RATE=60
   ```
 
-### 3. La ventola gira al massimo dei giri all'avvio
-- Verifica lo stato del servizio systemd digitando:
-  ```bash
-  systemctl status ps5-fan-daemon.service
-  ```
-- Esegui `ps5-temp` per verificare che i file `/sys/bus/platform/devices/ps5-fan/target_temp` o `/sys/class/hwmon/` siano esposti dal kernel.
-- Se hai modificato il kernel o reinstallato moduli, riesegui `./ps5-cachy-os-patch.sh --module fan`.
 
 ---
 
@@ -208,35 +203,33 @@ L'analisi funzionale è documentata in [ANALISI-FUNZIONALE-REFACTOR.md](docs/ana
 
 ## 🧪 Suite di Test Automatizzata (Hardware-Free)
 
-Il progetto include una suite di test automatizzati eseguibile in sandbox temporanea senza necessitare dell'hardware PS5. La CI GitHub controlla la sintassi degli script con `bash -n` e avvia poi la suite; questi test non sostituiscono una verifica pratica sulla combinazione specifica di PS5, kernel e display:
+La suite automatizzata gira in sandbox senza PS5. La CI controlla la sintassi e lancia i test, che non sostituiscono prove pratiche su console, kernel e display reali:
 
 ```bash
 bash tests/run-all-tests.sh
 ```
 
-I test convalidano:
-- Sintassi di tutti gli script bash e shell generati (`bash -n` / `sh -n`);
-- Idempotenza (applicazione multipla senza duplicazione di righe o configurazioni);
-- Funzionamento isolato dei moduli VRAM, Ethernet, Wi-Fi, Fan, KDE, Gamescope, Session, System e Cleanup;
-- Auto-rilevamento delle modalità DRM usate da Gamescope e verifica della configurazione video in `cmdline.txt`, inclusa la baseline 1080p60 prevista dal modulo `system`;
-- Simulazione di crash e attivazione del fallback automatico da Gamescope a KDE;
-- Pulizia dei file diagnostici legacy e generazione corretta delle unit systemd.
+I test coprono:
+- Sintassi e idempotenza degli script;
+- Esecuzione isolata dei moduli;
+- Rilevamento DRM e configurazione video di boot;
+- Crash di Gamescope e fallback a KDE;
+- Pulizia dei residui e generazione delle unit systemd.
 
 ---
 
 ## 📋 Requisiti di Sistema
-- **Console Target**: Sony PlayStation 5 (Fat / Slim, Digital o con lettore Blu-ray, predisposta autonomamente dall'utente per l'avvio di kernel Linux).
-- **Storage**: Disco SSD NVMe interno, SSD esterno USB 3.0 o chiavetta USB con installazione CachyOS x86_64 predisposta autonomamente dall'utente.
-- **PC Host di Patching**: Qualsiasi distribuzione Linux con `bash`, `coreutils`, `util-linux` (`lsblk`, `findmnt`, `blkid`), `e2fsprogs` (`e2fsck`), `dosfstools` (`fsck.fat`) e privilegi di `sudo`. Le partizioni della destinazione devono essere accessibili e montate in mount point riconoscibili dallo script.
+- **Console**: PS5 predisposta per avviare Linux. La piattaforma di riferimento è PS5 Digital Edition con firmware 13.60; altri chassis e revisioni richiedono verifica specifica.
+- **Storage**: NVMe interno, SSD USB o chiavetta con CachyOS x86_64.
+- **Host di patching**: Linux con Bash, coreutils, util-linux, e2fsprogs, dosfstools e `sudo`; le partizioni devono essere montate in percorsi riconoscibili.
 
 ---
 
 ## ⚖️ Dichiarazione di Non Affiliazione e Disclaimer Legale
-- **Progetto Indipendente e Non Ufficiale**: `ps5-cachy-os-patch` è un progetto open source indipendente e amatoriale sviluppato a scopi di ricerca, interoperabilità e amministrazione di sistemi Linux. Non è in alcun modo affiliato, sponsorizzato, approvato o collegato a Sony Interactive Entertainment Inc., né al team ufficiale di CachyOS.
-- **Marchi Registrati**: "PlayStation", "PS5" e i relativi loghi sono marchi registrati di Sony Interactive Entertainment Inc. Tutti i marchi commerciali appartengono ai rispettivi proprietari e sono menzionati unicamente a titolo descrittivo per indicare la compatibilità hardware.
-- **Assenza di Materiale Proprietario ed Exploit**: Il repository contiene unicamente script di configurazione in formato testo e componenti open source conformi alle rispettive licenze. Non include, non distribuisce e non promuove codice per l'elusione di misure tecnologiche di protezione (TPM), exploit di sicurezza, bootloader modificati, chiavi crittografiche o firmware proprietario Sony.
-- **Responsabilità dell'Utente**: L'utente deve predisporre autonomamente la propria installazione Linux e il relativo ambiente di esecuzione. L'utilizzo degli script avviene sotto la propria esclusiva responsabilità per quanto attiene alla conformità alle leggi vigenti, alle licenze dei componenti impiegati e ai termini d'uso dei dispositivi hardware.
-
+- **Progetto indipendente e non ufficiale**: `ps5-cachy-os-patch` è un progetto open source amatoriale per ricerca, interoperabilità e amministrazione Linux. Non è affiliato né approvato da Sony Interactive Entertainment Inc. o dal team ufficiale di CachyOS.
+- **Marchi registrati**: "PlayStation", "PS5" e i relativi loghi sono marchi di Sony Interactive Entertainment Inc.; gli altri marchi appartengono ai rispettivi proprietari. Sono citati per descrivere la compatibilità hardware.
+- **Nessun materiale proprietario o exploit**: il repository contiene script testuali e componenti open source conformi alle rispettive licenze. Non distribuisce né promuove codice per eludere misure tecnologiche di protezione (TPM), exploit, bootloader modificati, chiavi crittografiche o firmware proprietario Sony.
+- **Responsabilità dell'utente**: l'utente predispone autonomamente Linux e il relativo ambiente. È responsabile dell'uso degli script e del rispetto di leggi vigenti, licenze e termini d'uso dell'hardware.
 ---
 
 ## 📄 Licenza
