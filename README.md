@@ -123,9 +123,9 @@ Il modulo `session` installa un supervisore su `tty1` e imposta KDE Plasma come 
 
 ---
 
-### 2. Raffreddamento Dinamico Continuo a 12 Zone ("Ultra-Silent Continuous 1°C")
+### 2. Raffreddamento Dinamico Continuo a 12 Zone
 
-Il demone `ps5-fan-daemon` usa il sensore hwmon con la temperatura più alta disponibile e calcola un target continuo al singolo grado (`1°C`), con isteresi di 2°C e limitatore di discesa graduale (*anti-heat-soak*). Scrive il target nel controller PS5 quando esposto e usa il PWM hwmon come percorso alternativo. Le percentuali nella tabella sono stime del profilo, non misure garantite degli RPM: verifica sempre temperatura e risposta effettive sulla tua console.
+Il demone `ps5-fan-daemon` legge la temperatura hwmon più alta e regola il target continuamente a passi di 1°C, con isteresi di 2°C e discesa graduale (*anti-heat-soak*). Usa il controller PS5 quando disponibile, altrimenti il PWM hwmon. Le percentuali sono stime, non RPM garantiti: verifica temperatura e risposta della console.
 
 | Zona | Temperatura hwmon più alta letta | Target Servo Continuo | Regime Ventola Stimato | Fallback PWM (`45-255`) | Scenario d'Uso Tipico |
 | :---: | :---: | :---: | :---: | :---: | :--- |
