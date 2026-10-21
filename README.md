@@ -148,9 +148,9 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 ### 3. Rete, Sincronizzazione Orologio RTC/TLS e Wi-Fi
 
-- **Sincronizzazione orologio / TLS**: il modulo `ethernet` prepara i file di stato dell'orologio (`/usr/lib/clock-epoch` e `/var/lib/systemd/timesync/clock`), configura `systemd-timesyncd` e i server NTP e installa un dispatcher NetworkManager che forza un tentativo di sincronizzazione quando la connessione sale. Se NTP non riesce, prova a ricavare l'ora dall'header HTTP `Date`. Il recupero dipende dalla disponibilità della rete e dei server raggiungibili.
+- **Sincronizzazione orologio / TLS**: il modulo `ethernet` prepara i file di stato (`/usr/lib/clock-epoch` e `/var/lib/systemd/timesync/clock`), configura `systemd-timesyncd` e NTP e installa un dispatcher NetworkManager che tenta la sincronizzazione quando la connessione sale. Se NTP fallisce, prova a ricavare l'ora dall'header HTTP `Date`. Il recupero dipende dalla disponibilità della rete e dei server raggiungibili.
 
-- **Wi-Fi interno e dongle USB**: il modulo `wifi` rileva il percorso hardware e mette in staging il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e` considerato instabile per il target e non tratta il chip MediaTek come se fosse il NXP IW620; il supporto ai dongle USB viene preservato. La presenza del firmware richiesto rimane una precondizione per caricare il driver NXP.
+- **Wi-Fi interno e dongle USB**: `wifi` rileva il percorso hardware e prepara il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e`, considerato instabile sul target, distingue NXP da MediaTek e mantiene il supporto ai dongle USB. Il firmware corretto è necessario per caricare il driver NXP.
 
 - **Doppio controller Bluetooth**: il modulo `bluetooth` installa un servizio firmware e `ps5-bt-quiet`, che esamina i controller esposti dal kernel e tenta di disattivare l'interfaccia fantasma e attivare quella valida quando può distinguerle.
 
