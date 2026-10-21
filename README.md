@@ -50,7 +50,7 @@ sudo ./ps5-cachy-os-patch.sh --module fan
 sudo ./ps5-cachy-os-patch.sh --module session
 sudo ./ps5-cachy-os-patch.sh --module wifi
 
-# Modalità Dry-Run (ispezione dello stato corrente senza effettuare scritture su disco)
+# Modalità Dry-Run (controlla lo stato senza applicare le configurazioni dei moduli; i log possono essere aggiornati)
 sudo ./ps5-cachy-os-patch.sh --dry-run
 
 # Salta i controlli fsck su ext4 e FAT32/vfat (solo se hai già verificato i filesystem)
@@ -219,7 +219,7 @@ I test coprono:
 ---
 
 ## 📋 Requisiti di Sistema
-- **Console**: PS5 Fat/Slim, Digital o con lettore, predisposta per avviare Linux.
+- **Console**: PS5 predisposta per avviare Linux. La piattaforma di riferimento è PS5 Digital Edition con firmware 13.60; altri chassis e revisioni richiedono verifica specifica.
 - **Storage**: NVMe interno, SSD USB o chiavetta con CachyOS x86_64.
 - **Host di patching**: Linux con Bash, coreutils, util-linux, e2fsprogs, dosfstools e `sudo`; le partizioni devono essere montate in percorsi riconoscibili.
 
