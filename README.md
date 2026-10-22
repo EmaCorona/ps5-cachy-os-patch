@@ -76,6 +76,7 @@ Il codice è organizzato in `lib/`:
 | **[`cleanup`](docs/modules/cleanup.md)** | [`lib/modules/cleanup.sh`](lib/modules/cleanup.sh) | Rimuove lock/PID/socket orfani, autostart e binari residui, bonifica coredump, sanitizza `/etc/ps5-gamescope.conf`, imposta `desktop` come sessione predefinita e abilita `ps5-boot-cleanup.service`. |
 | **[`vram`](docs/modules/vram.md)** | [`lib/modules/vram.sh`](lib/modules/vram.sh) | Scrive il valore `0x100000000` (4 GiB) in `vram.txt` sulla partizione di boot; l'effetto finale dipende dal loader e dal kernel utilizzati. |
 | **[`m2`](docs/modules/m2.md)** | [`lib/modules/m2.sh`](lib/modules/m2.sh) | Inietta il hook mkinitcpio `ps5_m2_boot` in `initrd.img` per l'avvio prioritario da SSD M.2 interno (NVMe) con fallback automatico e trasparente su USB in assenza dell'SSD; include la suite di migrazione `ps5-m2-migrate` e `ps5-m2-init`. |
+| **[`m2_protection`](docs/modules/m2_protection.md)** | [`lib/modules/m2_protection.sh`](lib/modules/m2_protection.sh) | Protezione reversibile hardware/controller NVMe M.2 (Feature ID `0x84`, stato 1) con helper C autonomo `ps5-nvme-ctl`, sblocco automatico in `initrd.img` e riattivazione allo shutdown. |
 | **[`firstboot`](docs/modules/firstboot.md)** | [`lib/modules/firstboot.sh`](lib/modules/firstboot.sh) | Disabilita il wizard a finestre di primo avvio di CachyOS per evitare blocchi e schermate blu in assenza di controller configurati. |
 | **[`bluetooth`](docs/modules/bluetooth.md)** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Configura il caricamento sicuro del firmware Bluetooth (evitando il reset distruttivo dell'hub USB) e il servizio `ps5-bt-quiet`, che identifica le interfacce presenti, disattiva quella fantasma quando riconosciuta e prova ad attivare il controller valido. |
 | **[`ethernet`](docs/modules/ethernet.md)** | [`lib/modules/ethernet.sh`](lib/modules/ethernet.sh) | Crea profili NetworkManager per Ethernet, disabilita IPv6 nei profili generati, configura `systemd-timesyncd` con server NTP e fallback HTTP Date e raccoglie diagnostica di rete post-boot (`ps5-net-diag`). |
@@ -176,6 +177,18 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 | `status.txt` | Sessioni, DRM, temperature, ventola, servizi e log fallback | Solo snapshot full, circa +100 s |
 | `video.txt` | Output di `ps5-video-diag`, se installato | Snapshot early e full |
 | `logs/` | Copia dei log disponibili in `/var/log/ps5/` | Snapshot early e full, se presenti |
+
+---
+
+### 5. Protezione Reversibile NVMe M.2 contro Formattazione PS5 (`m2_protection`)
+
+Il modulo [`m2_protection`](docs/modules/m2_protection.md) protegge l'SSD M.2 NVMe su cui risiede CachyOS attivando la funzionalità standard **NVMe Namespace Write Protection** (Feature ID `0x84`, stato `1` = Write Protect Reversibile).
+
+- **Protezione Hardware da Firmware PS5**: Configura il controller dell'SSD affinché respinga a monte i tentativi di formattazione e scrittura impartiti dal firmware PlayStation 5 quando la console viene avviata nel sistema operativo nativo.
+- **Helper C Dedicato (`ps5-nvme-ctl`)**: Compilato autonomamente a zero dipendenze (< 30 KB) per operare nell'early userspace (`/usr/bin/ash` dell'initrd) e nella fase finale di `systemd-shutdown`.
+- **Sblocco e Riattivazione Trasparenti**: L'hook early-boot in `initrd.img` interroga e rimuove la protezione prima di montare il rootfs M.2 in lettura/scrittura; allo spegnimento, lo shutdown hook riattiva automaticamente la protezione reversibile.
+- **Divieto di Lock Permanenti**: Gli stati `2` (fino a power-cycle) e `3` (permanente) sono tassativamente vietati a livello di codice nell'helper C per escludere qualsiasi rischio di blocco hardware irreversibile.
+- **Strumenti CLI Runtime**: Gestione manuale e diagnostica tramite `sudo ps5-m2-protection {status|protect|unprotect|verify|configure}`.
 
 ---
 

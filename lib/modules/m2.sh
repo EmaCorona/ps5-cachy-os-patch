@@ -83,7 +83,16 @@ except Exception:
     local hook_dest="$tmp_dir/rootfs/hooks/ps5_m2_boot"
     local config_file="$tmp_dir/rootfs/config"
 
-    mkdir -p "$tmp_dir/rootfs/hooks"
+    mkdir -p "$tmp_dir/rootfs/hooks" "$tmp_dir/rootfs/bin" "$tmp_dir/rootfs/etc"
+
+    # Inclusione dell'helper autonomo ps5-nvme-ctl nel ramdisk
+    local repo_dir
+    repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+    local ctl_bin="${repo_dir}/resources/m2/ps5-nvme-ctl"
+    if [ -x "$ctl_bin" ]; then
+        cp -f "$ctl_bin" "$tmp_dir/rootfs/bin/ps5-nvme-ctl"
+        chmod 0755 "$tmp_dir/rootfs/bin/ps5-nvme-ctl"
+    fi
 
     # Genera lo script del hook ps5_m2_boot
     cat << 'EOF' > "$hook_dest"
@@ -132,11 +141,66 @@ run_hook() {
     fi
 
     if [ "$m2_valid" -eq 1 ]; then
+        # Controllo e gestione della Namespace Write Protection (Feature 0x84)
+        local ctl_tool=""
+        for p in /bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl /usr/local/bin/ps5-nvme-ctl; do
+            if [ -x "$p" ]; then
+                ctl_tool="$p"
+                break
+            fi
+        done
+
+        if [ -n "$ctl_tool" ]; then
+            local parent_dev="$m2_dev"
+            case "$m2_dev" in
+                *p[0-9]*) parent_dev="${m2_dev%p[0-9]*}" ;;
+                *[0-9]*)
+                    if [ -b "${m2_dev%p*}" ]; then parent_dev="${m2_dev%p*}"; fi
+                    ;;
+            esac
+
+            local wp_out wp_state
+            wp_out=$("$ctl_tool" get-feature "$parent_dev" 1 2>/dev/null || true)
+            wp_state=$(echo "$wp_out" | awk -F'=' '$1=="WP_STATE"{print $2}')
+
+            if [ "$wp_state" = "1" ]; then
+                ps5_kmsg "SSD M.2 protetto da scrittura (stato 1). Verifica identità prima dello sblocco..."
+                local proceed_unprotect=1
+                if [ -f /etc/ps5-m2-protection.conf ]; then
+                    local reg_sn
+                    reg_sn=$(awk -F'=' '$1=="M2_CTRL_SERIAL"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+                    if [ -n "$reg_sn" ]; then
+                        local cand_info cand_sn
+                        cand_info=$("$ctl_tool" id-ctrl "$parent_dev" 2>/dev/null || true)
+                        cand_sn=$(echo "$cand_info" | awk -F'=' '$1=="SN"{print $2}')
+                        if [ "$cand_sn" != "$reg_sn" ]; then
+                            ps5_kmsg "Discrepanza identità M.2 ($cand_sn != $reg_sn). Sblocco rifiutato!"
+                            proceed_unprotect=0
+                        fi
+                    fi
+                fi
+
+                if [ "$proceed_unprotect" -eq 1 ] && "$ctl_tool" set-feature "$parent_dev" 0 1 >/dev/null 2>&1; then
+                    ps5_kmsg "Protezione NVMe rimossa con successo (stato 0)."
+                else
+                    ps5_kmsg "Disattivazione protezione fallita. Rifiuto montaggio in scrittura su M.2!"
+                    m2_valid=0
+                fi
+            elif [ "$wp_state" = "2" ] || [ "$wp_state" = "3" ]; then
+                ps5_kmsg "Stato di protezione inatteso o permanente ($wp_state). Fallback di sicurezza su USB!"
+                m2_valid=0
+            elif [ "$wp_state" = "0" ]; then
+                ps5_kmsg "SSD M.2 non protetto (stato 0)."
+            fi
+        fi
+    fi
+
+    if [ "$m2_valid" -eq 1 ]; then
         ps5_kmsg "SSD M.2 rilevato e verificato ($m2_dev). Avvio prioritario da SSD M.2..."
         root="$m2_dev"
     else
         if [ -n "$m2_dev" ]; then
-            ps5_kmsg "SSD M.2 ($m2_dev) rilevato ma privo di OS valido (incompleto o corrotto)."
+            ps5_kmsg "SSD M.2 ($m2_dev) rilevato ma privo di OS valido o protetto in scrittura."
             ps5_kmsg "Fallback automatico di emergenza su chiavetta USB..."
         else
             ps5_kmsg "Nessun SSD M.2 con Linux rilevato. Avvio regolare da chiavetta USB..."

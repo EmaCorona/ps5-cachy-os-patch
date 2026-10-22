@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -101,16 +102,44 @@ typedef struct {
 
 int main(int argc, char *argv[]) {
   int fd;
-  uint64_t bytes;
+  uint64_t bytes = 0;
 
-  fd = open("/dev/nvme0n1", O_RDWR);
+  if (argc < 2 || argv[1] == NULL || argv[1][0] == '\0') {
+    fprintf(stderr, "Uso / Usage: %s <dispositivo_target (es: /dev/nvme0n1)>\n", argv[0]);
+    return EXIT_FAILURE;
+  }
+
+  const char *dev_path = argv[1];
+  struct stat st;
+  if (stat(dev_path, &st) == -1) {
+    perror("stat device target");
+    return EXIT_FAILURE;
+  }
+
+  if (!S_ISBLK(st.st_mode) && !S_ISREG(st.st_mode)) {
+    fprintf(stderr, "Errore: %s non è un dispositivo a blocchi valido né un file immagine regolare.\n", dev_path);
+    return EXIT_FAILURE;
+  }
+
+  fd = open(dev_path, O_RDWR);
   if (fd == -1) {
-    perror("open");
+    perror("open device target");
     return EXIT_FAILURE;
   }
 
   if (ioctl(fd, BLKGETSIZE64, &bytes) == -1) {
-    perror("ioctl");
+    if (S_ISREG(st.st_mode)) {
+      bytes = (uint64_t)st.st_size;
+    } else {
+      perror("ioctl BLKGETSIZE64");
+      close(fd);
+      return EXIT_FAILURE;
+    }
+  }
+
+  uint64_t min_bytes = (uint64_t)(PS5_M2_MBR_LBA + GPT_RESERVED_SECTORS + PS5_M2_PART44_LBA_OFFSET + 4096) * SECTOR_SIZE;
+  if (bytes < min_bytes) {
+    fprintf(stderr, "Errore: dimensione dispositivo insufficiente per layout PS5 (minimo %" PRIu64 " bytes, rilevati %" PRIu64 ").\n", min_bytes, bytes);
     close(fd);
     return EXIT_FAILURE;
   }
@@ -120,6 +149,12 @@ int main(int argc, char *argv[]) {
   uint64_t first_usable_lba = PS5_M2_MBR_LBA + GPT_RESERVED_SECTORS + 1;
   uint64_t last_usable_lba = lastlba - GPT_ARRAY_SECTORS - 1;
   uint64_t size_in_lba = lastlba - PS5_M2_MBR_LBA;
+
+  if (lastlba <= first_usable_lba || last_usable_lba <= first_usable_lba) {
+    fprintf(stderr, "Errore: calcolo LBA non valido per la geometria del disco.\n");
+    close(fd);
+    return EXIT_FAILURE;
+  }
 
   printf("Disk Info:\n");
   printf("  Total Bytes: %" PRIu64 "\n", bytes);

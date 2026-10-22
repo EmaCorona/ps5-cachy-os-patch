@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# bin/ps5-m2-protection - Gestione Protezione Reversibile NVMe M.2 per PS5
+# ==============================================================================
+# Interfaccia runtime per interrogare lo stato, attivare o disattivare
+# la Namespace Write Protection (Feature ID 0x84) sull'SSD M.2 interno.
+# ==============================================================================
+set -euo pipefail
+
+VERSION="1.0.0"
+CONF_FILE="${PS5_M2_PROTECTION_CONF:-/etc/ps5-m2-protection.conf}"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "")
+
+# Caricamento modulo di logging centralizzato se presente
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
+
+# Stili terminale
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+say_info()    { echo -e "${CYAN}[INFO]${NC} $*"; ps5_log m2_protection info "$*" 2>/dev/null || true; }
+say_ok()      { echo -e "${GREEN}[OK]${NC} $*"; ps5_log m2_protection info "$*" 2>/dev/null || true; }
+say_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; ps5_log m2_protection warn "$*" 2>/dev/null || true; }
+say_error()   { echo -e "${RED}[ERRORE]${NC} $*" >&2; ps5_log m2_protection error "$*" 2>/dev/null || true; }
+
+# Ricerca helper ps5-nvme-ctl
+find_ctl_bin() {
+    if [ -n "${PS5_NVME_CTL_BIN:-}" ] && [ -x "$PS5_NVME_CTL_BIN" ]; then
+        echo "$PS5_NVME_CTL_BIN"
+        return 0
+    fi
+    for p in /usr/local/bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+CTL_BIN=$(find_ctl_bin || true)
+if [ -z "$CTL_BIN" ]; then
+    say_error "Helper ps5-nvme-ctl non trovato. Assicurati che il modulo m2_protection sia installato."
+    exit 1
+fi
+
+load_config() {
+    if [ -f "$CONF_FILE" ]; then
+        # shellcheck disable=SC1090
+        . "$CONF_FILE"
+    fi
+}
+
+# Rilevamento controller e namespace NVMe candidato
+detect_nvme_device() {
+    # Se presente mock per sandbox testing
+    if [ -n "${PS5_NVME_MOCK_FILE:-}" ] && [ -f "$PS5_NVME_MOCK_FILE" ]; then
+        TARGET_DEV="/dev/mock"
+        TARGET_NSID=1
+        return 0
+    fi
+
+    # Override esplicito per test
+    if [ -n "${PS5_M2_TARGET_DEV:-}" ]; then
+        TARGET_DEV="$PS5_M2_TARGET_DEV"
+        TARGET_NSID="${PS5_M2_TARGET_NSID:-1}"
+        return 0
+    fi
+
+    load_config
+
+    local found_dev=""
+    for cand in /dev/nvme*n1 /dev/nvme*; do
+        [ -e "$cand" ] || continue
+        case "$cand" in
+            *p[0-9]*) continue ;;
+        esac
+
+        local info
+        info=$("$CTL_BIN" id-ctrl "$cand" 2>/dev/null || true)
+        local cand_sn cand_mn
+        cand_sn=$(echo "$info" | awk -F'=' '$1=="SN"{print $2}')
+        cand_mn=$(echo "$info" | awk -F'=' '$1=="MN"{print $2}')
+
+        if [ -n "${M2_CTRL_SERIAL:-}" ] && [ "$cand_sn" = "$M2_CTRL_SERIAL" ]; then
+            found_dev="$cand"
+            break
+        fi
+
+        # Se non c'è config, salva il primo dispositivo a blocchi nvme valido
+        if [ -z "${M2_CTRL_SERIAL:-}" ] && [[ "$cand" == *n1 ]]; then
+            if [ -z "$found_dev" ]; then
+                found_dev="$cand"
+            fi
+        fi
+    done
+
+    if [ -n "$found_dev" ]; then
+        TARGET_DEV="$found_dev"
+        TARGET_NSID="${M2_NS_ID:-1}"
+        return 0
+    fi
+
+    TARGET_DEV=""
+    TARGET_NSID=1
+    return 1
+}
+
+# Verifica identità tra dispositivo reale e configurazione registrata
+verify_identity() {
+    local dev="$1"
+    load_config
+
+    if [ -z "${M2_CTRL_SERIAL:-}" ]; then
+        say_warn "Nessun SSD M.2 registrato in $CONF_FILE. Esegui 'ps5-m2-protection configure' per registrare l'identità."
+        return 2
+    fi
+
+    local info
+    info=$("$CTL_BIN" id-ctrl "$dev" 2>/dev/null || true)
+    local cur_sn cur_mn
+    cur_sn=$(echo "$info" | awk -F'=' '$1=="SN"{print $2}')
+    cur_mn=$(echo "$info" | awk -F'=' '$1=="MN"{print $2}')
+
+    if [ "$cur_sn" != "$M2_CTRL_SERIAL" ]; then
+        say_error "Discrepanza seriale SSD (registrato: '$M2_CTRL_SERIAL', rilevato: '$cur_sn')!"
+        return 1
+    fi
+
+    if [ -n "${M2_CTRL_MODEL:-}" ] && [ "$cur_mn" != "$M2_CTRL_MODEL" ]; then
+        say_error "Discrepanza modello SSD (registrato: '$M2_CTRL_MODEL', rilevato: '$cur_mn')!"
+        return 1
+    fi
+
+    return 0
+}
+
+# ------------------------------------------------------------------------------
+# COMANDI CLI
+# ------------------------------------------------------------------------------
+
+cmd_status() {
+    local quiet="${1:-0}"
+    load_config
+
+    if ! detect_nvme_device; then
+        if [ "$quiet" != "1" ]; then
+            say_error "Nessun dispositivo NVMe rilevato."
+            echo "STATO: UNKNOWN"
+        fi
+        return 3
+    fi
+
+    local ctrl_info
+    if ! ctrl_info=$("$CTL_BIN" id-ctrl "$TARGET_DEV" 2>/dev/null); then
+        if [ "$quiet" != "1" ]; then
+            say_error "Impossibile comunicare con il controller NVMe su $TARGET_DEV."
+            echo "STATO: ERROR"
+        fi
+        return 4
+    fi
+
+    local cur_mn cur_sn cur_fr cur_nwpc cur_rev
+    cur_mn=$(echo "$ctrl_info" | awk -F'=' '$1=="MN"{print $2}')
+    cur_sn=$(echo "$ctrl_info" | awk -F'=' '$1=="SN"{print $2}')
+    cur_fr=$(echo "$ctrl_info" | awk -F'=' '$1=="FR"{print $2}')
+    cur_nwpc=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC"{print $2}')
+    cur_rev=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC_REVERSIBLE"{print $2}')
+
+    # Controllo corrispondenza identità
+    if [ -n "${M2_CTRL_SERIAL:-}" ] && [ "$cur_sn" != "$M2_CTRL_SERIAL" ]; then
+        if [ "$quiet" != "1" ]; then
+            say_error "Dispositivo rilevato ($cur_sn) non corrispondente alla configurazione registrata ($M2_CTRL_SERIAL)."
+            echo "STATO: MISMATCH"
+        fi
+        return 5
+    fi
+
+    # Controllo supporto capacità NWPC bit 0 (Write Protect reversibile)
+    if [ "$cur_rev" != "1" ]; then
+        if [ "$quiet" != "1" ]; then
+            say_warn "Il controller $cur_mn non supporta la Namespace Write Protection reversibile (NWPC=$cur_nwpc)."
+            echo "STATO: UNSUPPORTED"
+        fi
+        return 2
+    fi
+
+    # Lettura stato corrente della protezione (Feature 0x84)
+    local feat_info
+    if ! feat_info=$("$CTL_BIN" get-feature "$TARGET_DEV" "$TARGET_NSID" 2>/dev/null); then
+        if [ "$quiet" != "1" ]; then
+            say_error "Impossibile leggere la Feature 0x84 dal controller."
+            echo "STATO: ERROR"
+        fi
+        return 4
+    fi
+
+    local wp_state wp_desc
+    wp_state=$(echo "$feat_info" | awk -F'=' '$1=="WP_STATE"{print $2}')
+    wp_desc=$(echo "$feat_info" | awk -F'=' '$1=="WP_STATE_DESC"{print $2}')
+
+    local logical_state="UNKNOWN"
+    local rc=0
+    if [ "$wp_state" = "0" ]; then
+        logical_state="SUPPORTED_UNPROTECTED"
+        rc=0
+    elif [ "$wp_state" = "1" ]; then
+        logical_state="SUPPORTED_PROTECTED"
+        rc=0
+    else
+        logical_state="UNKNOWN"
+        rc=1
+    fi
+
+    if [ "$quiet" != "1" ]; then
+        echo -e "${BOLD}Stato Protezione NVMe M.2 PS5:${NC}"
+        echo -e "  Dispositivo Target : ${BOLD}${TARGET_DEV}${NC} (NSID: ${TARGET_NSID})"
+        echo -e "  Modello Controller : ${BOLD}${cur_mn}${NC}"
+        echo -e "  Seriale Controller : ${BOLD}${cur_sn}${NC}"
+        echo -e "  Firmware Revision  : ${BOLD}${cur_fr}${NC}"
+        echo -e "  Capacità NWPC      : ${BOLD}${cur_nwpc}${NC} (Reversibile: ${GREEN}Sì${NC})"
+        echo -e "  Stato Protezione   : ${BOLD}${wp_desc}${NC} (Valore: ${wp_state})"
+        echo -e "  Stato Logico       : ${BOLD}${logical_state}${NC}"
+    fi
+
+    [ "$rc" -eq 0 ] && return 0
+    return 1
+}
+
+cmd_protect() {
+    load_config
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_error "L'attivazione della protezione richiede privilegi di root (esegui con sudo)."
+        exit 1
+    fi
+
+    if ! detect_nvme_device; then
+        say_error "Nessun dispositivo NVMe target rilevato."
+        exit 1
+    fi
+
+    if ! verify_identity "$TARGET_DEV"; then
+        say_error "Attivazione protezione annullata per mancata corrispondenza dell'identità del disco."
+        exit 1
+    fi
+
+    # Controllo che nessuna partizione del namespace sia montata
+    # (Per uso manuale, impediamo di congelare un filesystem in uso a caldo)
+    if [ "${PS5_M2_FORCE_SHUTDOWN:-0}" != "1" ] && command -v lsblk >/dev/null 2>&1; then
+        local mounts
+        mounts=$(lsblk -no MOUNTPOINTS "$TARGET_DEV" 2>/dev/null | grep -v '^$' || true)
+        if [ -n "$mounts" ]; then
+            say_error "Il namespace $TARGET_DEV ha partizioni attualmente montate ($mounts)!"
+            say_error "Smonta tutte le partizioni prima di attivare la protezione da riga di comando per evitare freeze del filesystem."
+            exit 1
+        fi
+    fi
+
+    say_info "Attivazione della protezione reversibile (stato 1) su $TARGET_DEV (NSID: $TARGET_NSID)..."
+    if "$CTL_BIN" set-feature "$TARGET_DEV" 1 "$TARGET_NSID"; then
+        say_ok "Protezione reversibile (stato 1) attivata e verificata con successo dal controller."
+        return 0
+    else
+        say_error "Attivazione o verifica della protezione fallita!"
+        return 1
+    fi
+}
+
+cmd_unprotect() {
+    load_config
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_error "La disattivazione della protezione richiede privilegi di root (esegui con sudo)."
+        exit 1
+    fi
+
+    if ! detect_nvme_device; then
+        say_error "Nessun dispositivo NVMe target rilevato."
+        exit 1
+    fi
+
+    if ! verify_identity "$TARGET_DEV"; then
+        say_error "Disattivazione annullata: identità del disco non corrispondente."
+        exit 1
+    fi
+
+    say_info "Disattivazione della protezione (stato 0) su $TARGET_DEV (NSID: $TARGET_NSID)..."
+    if "$CTL_BIN" set-feature "$TARGET_DEV" 0 "$TARGET_NSID"; then
+        say_ok "Protezione rimossa (stato 0) e verificata con successo dal controller."
+        return 0
+    else
+        say_error "Disattivazione o verifica fallita!"
+        return 1
+    fi
+}
+
+cmd_verify() {
+    say_info "Interrogazione diretta dello stato del controller (sola lettura)..."
+    cmd_status
+}
+
+cmd_configure() {
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_error "La configurazione richiede privilegi di root (esegui con sudo)."
+        exit 1
+    fi
+
+    say_info "Scansione dei dispositivi NVMe disponibili nel sistema..."
+    if ! detect_nvme_device; then
+        say_error "Nessun SSD NVMe rilevato nel sistema."
+        exit 1
+    fi
+
+    local ctrl_info ns_info
+    ctrl_info=$("$CTL_BIN" id-ctrl "$TARGET_DEV" 2>/dev/null || true)
+    ns_info=$("$CTL_BIN" id-ns "$TARGET_DEV" "$TARGET_NSID" 2>/dev/null || true)
+
+    local cur_mn cur_sn cur_nwpc cur_rev cur_nsze cur_nguid cur_eui64
+    cur_mn=$(echo "$ctrl_info" | awk -F'=' '$1=="MN"{print $2}')
+    cur_sn=$(echo "$ctrl_info" | awk -F'=' '$1=="SN"{print $2}')
+    cur_nwpc=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC"{print $2}')
+    cur_rev=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC_REVERSIBLE"{print $2}')
+
+    cur_nsze=$(echo "$ns_info" | awk -F'=' '$1=="NSZE"{print $2}')
+    cur_nguid=$(echo "$ns_info" | awk -F'=' '$1=="NGUID"{print $2}')
+    cur_eui64=$(echo "$ns_info" | awk -F'=' '$1=="EUI64"{print $2}')
+
+    echo -e "\n${BOLD}SSD M.2 Rilevato per la Registrazione:${NC}"
+    echo -e "  Device               : ${CYAN}${TARGET_DEV}${NC}"
+    echo -e "  Modello              : ${BOLD}${cur_mn}${NC}"
+    echo -e "  Seriale              : ${BOLD}${cur_sn}${NC}"
+    echo -e "  Capacità (Settori)   : ${cur_nsze}"
+    echo -e "  NGUID                : ${cur_nguid}"
+    echo -e "  EUI64                : ${cur_eui64}"
+    echo -e "  Supporto Reversibile : $([ "$cur_rev" = "1" ] && echo -e "${GREEN}Supportato (NWPC=${cur_nwpc})${NC}" || echo -e "${RED}NON SUPPORTATO (NWPC=${cur_nwpc})${NC}")"
+
+    if [ "$cur_rev" != "1" ]; then
+        say_error "Impossibile registrare il dispositivo: il controller non supporta la Namespace Write Protection reversibile."
+        exit 1
+    fi
+
+    if [ "${PS5_M2_AUTO_CONFIRM:-0}" != "1" ]; then
+        echo -e "\n${YELLOW}${BOLD}Confermi la registrazione di questo dispositivo come target di protezione per PS5?${NC}"
+        echo -e "Digita esattamente ${BOLD}CONFERMO${NC} e premi Invio per salvare la configurazione in $CONF_FILE: "
+        read -r resp
+        if [ "$resp" != "CONFERMO" ]; then
+            say_error "Configurazione annullata dall'utente."
+            exit 1
+        fi
+    fi
+
+    mkdir -p "$(dirname "$CONF_FILE")"
+    cat << EOF > "$CONF_FILE"
+# ==============================================================================
+# /etc/ps5-m2-protection.conf - Configurazione Protezione NVMe M.2 PS5
+# ==============================================================================
+# Generato automaticamente da 'ps5-m2-protection configure'
+# Data: $(date -Is 2>/dev/null || date)
+# ==============================================================================
+
+M2_PROTECTION_ENABLED=1
+M2_CTRL_MODEL="$cur_mn"
+M2_CTRL_SERIAL="$cur_sn"
+M2_NS_ID=$TARGET_NSID
+M2_NS_NGUID="$cur_nguid"
+M2_NS_EUI64="$cur_eui64"
+M2_NS_SIZE_SECTORS=${cur_nsze:-0}
+AUTO_PROTECT_ON_SHUTDOWN=1
+VERBOSE_LOGGING=1
+EOF
+    chmod 0644 "$CONF_FILE"
+
+    say_ok "Configurazione registrata con successo in $CONF_FILE."
+}
+
+show_help() {
+    cat << EOF
+Uso: sudo $0 <COMANDO> [OPZIONI]
+
+Strumento di gestione della Namespace Write Protection NVMe per PlayStation 5.
+
+Comandi disponibili:
+  status       Mostra l'identità del disco, le capacità NWPC e lo stato della protezione
+  protect      Attiva la protezione reversibile (stato 1) sul disco registrato smontato
+  unprotect    Rimuove la protezione reversibile (ripristina stato 0) per manutenzione
+  verify       Interroga direttamente il controller confermando lo stato senza scritture
+  configure    Rileva interattivamente l'SSD M.2, richiede conferma e registra l'identità
+  --help, -h   Mostra questa guida ed esce
+
+File di configurazione: $CONF_FILE
+EOF
+}
+
+case "${1:-}" in
+    status)
+        cmd_status
+        ;;
+    protect)
+        cmd_protect
+        ;;
+    unprotect)
+        cmd_unprotect
+        ;;
+    verify)
+        cmd_verify
+        ;;
+    configure)
+        cmd_configure
+        ;;
+    --help|-h|"")
+        show_help
+        exit 0
+        ;;
+    *)
+        say_error "Comando non riconosciuto: $1"
+        show_help
+        exit 1
+        ;;
+esac

@@ -1,0 +1,104 @@
+#!/bin/sh
+# ==============================================================================
+# /usr/lib/systemd/system-shutdown/ps5-m2-protect
+# ==============================================================================
+# Hook eseguito nel tratto finale dello spegnimento da systemd-shutdown.
+# Eseguito quando tutti i servizi sono terminati e il filesystem è smontato o RO.
+# Riattiva la Namespace Write Protection reversibile (stato 1) per prevenire
+# cancellazioni o formattazioni accidentali al successivo avvio del firmware PS5.
+# ==============================================================================
+
+ACTION="${1:-poweroff}"
+
+# Non proteggere in caso di kexec immediato
+[ "$ACTION" = "kexec" ] && exit 0
+
+CONF="/etc/ps5-m2-protection.conf"
+[ -f "$CONF" ] || exit 0
+
+# Caricamento configurazione
+# shellcheck disable=SC1090
+. "$CONF" 2>/dev/null || exit 0
+
+[ "${M2_PROTECTION_ENABLED:-0}" = "1" ] || exit 0
+[ "${AUTO_PROTECT_ON_SHUTDOWN:-0}" = "1" ] || exit 0
+
+log_msg() {
+    local lvl="$1"
+    local txt="$2"
+    echo "<${lvl}>ps5-m2-protect: ${txt}" > /dev/kmsg 2>/dev/null || true
+    echo "ps5-m2-protect: ${txt}" > /dev/console 2>/dev/null || true
+}
+
+# Ricerca del binario ps5-nvme-ctl
+CTL_BIN=""
+if [ -n "${PS5_NVME_CTL_BIN:-}" ] && [ -x "$PS5_NVME_CTL_BIN" ]; then
+    CTL_BIN="$PS5_NVME_CTL_BIN"
+else
+    for p in /usr/local/bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl /bin/ps5-nvme-ctl; do
+        if [ -x "$p" ]; then
+            CTL_BIN="$p"
+            break
+        fi
+    done
+fi
+
+if [ -z "$CTL_BIN" ]; then
+    log_msg 4 "Helper ps5-nvme-ctl non trovato. Protezione allo shutdown saltata."
+    exit 0
+fi
+
+# Se non è stato registrato alcun seriale, non operare ciecamente
+if [ -z "${M2_CTRL_SERIAL:-}" ]; then
+    [ "${VERBOSE_LOGGING:-0}" = "1" ] && log_msg 6 "Nessuna identità M.2 registrata in $CONF. Shutdown invariato."
+    exit 0
+fi
+
+# Sincronizzazione preventiva dei dati su disco
+sync
+
+# Identificazione del dispositivo corrispondente al seriale registrato
+TARGET_DEV=""
+if [ -n "${PS5_NVME_MOCK_FILE:-}" ] && [ -f "$PS5_NVME_MOCK_FILE" ]; then
+    TARGET_DEV="/dev/mock"
+else
+    for cand in /dev/nvme*n1 /dev/nvme*; do
+        [ -e "$cand" ] || continue
+        # Escludi le partizioni (es: p1, p2)
+        case "$cand" in
+            *p[0-9]*) continue ;;
+        esac
+
+        info=$("$CTL_BIN" id-ctrl "$cand" 2>/dev/null || true)
+        cand_sn=$(echo "$info" | awk -F'=' '$1=="SN"{print $2}')
+        if [ "$cand_sn" = "$M2_CTRL_SERIAL" ]; then
+            TARGET_DEV="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -z "$TARGET_DEV" ]; then
+    log_msg 4 "Disco SSD M.2 con seriale $M2_CTRL_SERIAL non trovato. Protezione non applicata."
+    exit 0
+fi
+
+# Verifica che il filesystem non sia montato in modalità scrittura
+# (In fase systemd-shutdown i filesystem sono già RO o unmounted)
+if command -v findmnt >/dev/null 2>&1; then
+    rw_mounts=$(findmnt -n -o TARGET,OPTIONS -S "$TARGET_DEV" 2>/dev/null | grep '\brw\b' || true)
+    if [ -n "$rw_mounts" ]; then
+        log_msg 3 "ATTENZIONE: Trovate partizioni montate RW su $TARGET_DEV ($rw_mounts). Protezione annullata per salvaguardare il filesystem!"
+        exit 0
+    fi
+fi
+
+# Esecuzione del comando di protezione reversibile (stato 1)
+NSID="${M2_NS_ID:-1}"
+if "$CTL_BIN" set-feature "$TARGET_DEV" 1 "$NSID" >/dev/null 2>&1; then
+    log_msg 6 "Namespace Write Protection (stato 1) riattivata con successo su $TARGET_DEV per lo shutdown ($ACTION)."
+else
+    log_msg 3 "ERRORE: Impossibile riattivare la protezione su $TARGET_DEV allo shutdown."
+fi
+
+exit 0

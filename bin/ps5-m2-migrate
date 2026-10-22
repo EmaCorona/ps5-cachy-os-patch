@@ -162,6 +162,10 @@ ensure_m2_init_bin() {
         M2_INIT_BIN="/usr/local/sbin/ps5-m2-init"
         return 0
     fi
+    if [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/resources/m2/ps5-m2-init" ]; then
+        M2_INIT_BIN="$REPO_DIR/resources/m2/ps5-m2-init"
+        return 0
+    fi
     if [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/bin/ps5-m2-init" ]; then
         M2_INIT_BIN="$REPO_DIR/bin/ps5-m2-init"
         return 0
@@ -169,7 +173,7 @@ ensure_m2_init_bin() {
 
     # Cerca il sorgente C nel repository o in percorsi standard
     local src_file=""
-    for p in "$REPO_DIR/src/m2_init.c" "/usr/local/src/ps5-m2-init.c" "/tmp/m2_init.c"; do
+    for p in "$REPO_DIR/resources/m2/m2_init.c" "$REPO_DIR/src/m2_init.c" "/usr/local/src/ps5-m2-init.c" "/tmp/m2_init.c"; do
         if [ -f "$p" ]; then src_file="$p"; break; fi
     done
 
@@ -190,6 +194,41 @@ ensure_m2_init_bin() {
     chmod 0755 "$out_bin"
     M2_INIT_BIN="$out_bin"
     say_ok "Compilazione ps5-m2-init riuscita ($M2_INIT_BIN)."
+}
+
+# Controllo preventivo Namespace Write Protection
+check_m2_protection() {
+    local dev="$1"
+    local ctl_tool=""
+    for p in /usr/local/sbin/ps5-m2-protection "$REPO_DIR/bin/ps5-m2-protection" /usr/local/bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
+        if [ -x "$p" ]; then ctl_tool="$p"; break; fi
+    done
+
+    [ -n "$ctl_tool" ] || return 0
+
+    local is_protected=0
+    if [[ "$ctl_tool" == *"ps5-m2-protection"* ]]; then
+        local out
+        out=$("$ctl_tool" status 2>/dev/null || true)
+        if echo "$out" | grep -q "SUPPORTED_PROTECTED"; then
+            is_protected=1
+        fi
+    elif [[ "$ctl_tool" == *"ps5-nvme-ctl"* ]]; then
+        local out
+        out=$("$ctl_tool" get-feature "$dev" 1 2>/dev/null || true)
+        local st
+        st=$(echo "$out" | awk -F'=' '$1=="WP_STATE"{print $2}')
+        if [ "$st" = "1" ] || [ "$st" = "2" ] || [ "$st" = "3" ]; then
+            is_protected=1
+        fi
+    fi
+
+    if [ "$is_protected" -eq 1 ]; then
+        say_error "Il dispositivo $dev è protetto in scrittura (Namespace Write Protection attivo)!"
+        say_info "Per procedere con operazioni distruttive di migrazione, rimuovi prima la protezione consapevolmente:"
+        say_info "  sudo ps5-m2-protection unprotect"
+        say_abort "Operazione annullata per presenza di protezione attiva su $dev."
+    fi
 }
 
 # ==============================================================================
@@ -285,6 +324,9 @@ cmd_init() {
     fi
     get_device_info "$TARGET_DEV"
 
+    # Verifica di sicurezza: disco non protetto in scrittura
+    check_m2_protection "$TARGET_DEV"
+
     # Controllo che il target non sia montato
     local mounts
     mounts=$(lsblk -no MOUNTPOINTS "$TARGET_DEV" 2>/dev/null | grep -v '^$' || true)
@@ -372,6 +414,9 @@ cmd_install() {
     if ! detect_target_device; then
         say_abort "Nessun dispositivo SSD M.2 target rilevato."
     fi
+
+    # Verifica di sicurezza: disco non protetto in scrittura
+    check_m2_protection "$TARGET_DEV"
 
     local target_part="${TARGET_DEV}p1"
     # Gestione dischi mock o device senza convenzione 'p'

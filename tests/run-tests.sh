@@ -1463,7 +1463,7 @@ test_cli_orchestration() {
     fi
 
     # Verifica permessi di esecuzione sui binari CLI in bin/
-    if [ -x "$main_cli" ] && [ -x "$REPO_DIR/bin/fix_ps5_boot.sh" ]; then
+    if [ -x "$main_cli" ] && [ -x "$REPO_DIR/bin/fix_ps5_boot.sh" ] && [ -x "$REPO_DIR/bin/ps5-m2-protection" ]; then
         say_pass "Permessi di esecuzione presenti sui binari CLI in bin/"
     else
         say_fail "Permessi di esecuzione mancanti sui binari CLI in bin/"
@@ -1479,8 +1479,8 @@ test_cli_orchestration() {
 
     local list_out
     list_out=$("$main_cli" --list-modules 2>&1 || true)
-    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "ethernet" && echo "$list_out" | grep -q "wifi" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope" && echo "$list_out" | grep -q "session"; then
-        say_pass "Flag --list-modules elenca i moduli principali (incluso session)"
+    if echo "$list_out" | grep -q "vram" && echo "$list_out" | grep -q "m2_protection" && echo "$list_out" | grep -q "ethernet" && echo "$list_out" | grep -q "wifi" && echo "$list_out" | grep -q "fan" && echo "$list_out" | grep -q "kde" && echo "$list_out" | grep -q "gamescope" && echo "$list_out" | grep -q "session"; then
+        say_pass "Flag --list-modules elenca i moduli principali (inclusi session e m2_protection)"
     else
         say_fail "Flag --list-modules incompleto o non funzionante"
     fi
@@ -1731,6 +1731,469 @@ test_master_patch_full() {
 }
 
 # ------------------------------------------------------------------------------
+# 14. Test Protezione Reversibile NVMe M.2 (Feature ID 0x84)
+# ------------------------------------------------------------------------------
+
+test_m2_init_validation() {
+    local init_bin="$REPO_DIR/resources/m2/ps5-m2-init"
+    [ -x "$init_bin" ] || init_bin="$REPO_DIR/bin/ps5-m2-init"
+
+    # Test 1: Nessun argomento
+    if "$init_bin" >/dev/null 2>&1; then
+        say_fail "ps5-m2-init senza argomenti avrebbe dovuto fallire"
+    else
+        say_pass "ps5-m2-init senza argomenti rifiuta l'esecuzione (exit code 1)"
+    fi
+
+    # Test 2: File inesistente
+    if "$init_bin" "/nonexistent/device/path" >/dev/null 2>&1; then
+        say_fail "ps5-m2-init con percorso inesistente avrebbe dovuto fallire"
+    else
+        say_pass "ps5-m2-init con percorso inesistente rifiuta l'esecuzione (stat error)"
+    fi
+
+    # Test 3: File regolare mock di dimensione adeguata (100M)
+    local mock_img="${SANDBOX_DIR}/mock_ps5_m2.img"
+    truncate -s 100M "$mock_img" 2>/dev/null || true
+    if "$init_bin" "$mock_img" >/dev/null 2>&1; then
+        local mbr_sig
+        mbr_sig=$(dd if="$mock_img" bs=1 skip=$((65536 * 512 + 510)) count=2 2>/dev/null | xxd -p || true)
+        if [ "$mbr_sig" = "55aa" ]; then
+            say_pass "ps5-m2-init ha scritto correttamente l'MBR a LBA 65536 sul target dinamico"
+        else
+            say_fail "Firma MBR 0xAA55 non trovata a LBA 65536 (trovato: '$mbr_sig')"
+        fi
+    else
+        say_fail "ps5-m2-init ha fallito l'inizializzazione su file regolare mock"
+    fi
+}
+
+test_ps5_nvme_ctl() {
+    local ctl_bin="$REPO_DIR/resources/m2/ps5-nvme-ctl"
+    local mock_file="${SANDBOX_DIR}/nvme_mock_ctrl.state"
+
+    cat << 'EOF' > "$mock_file"
+MN=Samsung SSD 980 PRO 1TB
+SN=S5GXNF0R123456
+FR=5B2QGXA7
+NWPC=1
+NSID=1
+NSZE=2000409264
+NCAP=2000409264
+NGUID=002538b123456789
+EUI64=0025381234567890
+WP_STATE=0
+EOF
+
+    export PS5_NVME_MOCK_FILE="$mock_file"
+
+    # Test id-ctrl
+    local out_ctrl
+    out_ctrl=$("$ctl_bin" id-ctrl /dev/mock 2>/dev/null || true)
+    if echo "$out_ctrl" | grep -q "SN=S5GXNF0R123456" && echo "$out_ctrl" | grep -q "NWPC_REVERSIBLE=1"; then
+        say_pass "ps5-nvme-ctl id-ctrl restituisce SN, MN e NWPC_REVERSIBLE=1"
+    else
+        say_fail "ps5-nvme-ctl id-ctrl output errato"
+    fi
+
+    # Test get-feature stato 0 iniziale
+    local out_get
+    out_get=$("$ctl_bin" get-feature /dev/mock 1 2>/dev/null || true)
+    if echo "$out_get" | grep -q "WP_STATE=0" && echo "$out_get" | grep -q "NO_PROTECT"; then
+        say_pass "ps5-nvme-ctl get-feature rileva stato iniziale 0 (NO_PROTECT)"
+    else
+        say_fail "ps5-nvme-ctl get-feature non rileva stato 0"
+    fi
+
+    # Test set-feature 1 (transizione 0 -> 1)
+    if "$ctl_bin" set-feature /dev/mock 1 1 >/dev/null 2>&1; then
+        local out_post1
+        out_post1=$("$ctl_bin" get-feature /dev/mock 1 2>/dev/null || true)
+        if echo "$out_post1" | grep -q "WP_STATE=1" && echo "$out_post1" | grep -q "WRITE_PROTECT"; then
+            say_pass "ps5-nvme-ctl set-feature 1 abilita e verifica la protezione reversibile"
+        else
+            say_fail "ps5-nvme-ctl post-verifica stato 1 fallita"
+        fi
+    else
+        say_fail "ps5-nvme-ctl set-feature 1 fallito"
+    fi
+
+    # Test set-feature 0 (transizione 1 -> 0)
+    if "$ctl_bin" set-feature /dev/mock 0 1 >/dev/null 2>&1; then
+        local out_post0
+        out_post0=$("$ctl_bin" get-feature /dev/mock 1 2>/dev/null || true)
+        if echo "$out_post0" | grep -q "WP_STATE=0"; then
+            say_pass "ps5-nvme-ctl set-feature 0 disabilita e verifica il ripristino di stato 0"
+        else
+            say_fail "ps5-nvme-ctl post-verifica stato 0 fallita"
+        fi
+    else
+        say_fail "ps5-nvme-ctl set-feature 0 fallito"
+    fi
+
+    # Test di sicurezza: tentativo stato 2 (power-cycle) -> RIFIUTO
+    local rc2=0
+    "$ctl_bin" set-feature /dev/mock 2 1 >/dev/null 2>&1 || rc2=$?
+    if [ "$rc2" -eq 2 ]; then
+        say_pass "ps5-nvme-ctl rifiuta tassativamente lo stato 2 (exit code 2)"
+    else
+        say_fail "ps5-nvme-ctl non ha rifiutato lo stato 2 con codice 2 (rc=$rc2)"
+    fi
+
+    # Test di sicurezza: tentativo stato 3 (permanente) -> RIFIUTO
+    local rc3=0
+    "$ctl_bin" set-feature /dev/mock 3 1 >/dev/null 2>&1 || rc3=$?
+    if [ "$rc3" -eq 2 ]; then
+        say_pass "ps5-nvme-ctl rifiuta tassativamente lo stato permanente 3 (exit code 2)"
+    else
+        say_fail "ps5-nvme-ctl non ha rifiutato lo stato permanente 3 con codice 2 (rc=$rc3)"
+    fi
+
+    # Test errore controller: REJECT_SET_FEATURE=1
+    echo "REJECT_SET_FEATURE=1" >> "$mock_file"
+    local rc_fail=0
+    "$ctl_bin" set-feature /dev/mock 1 1 >/dev/null 2>&1 || rc_fail=$?
+    if [ "$rc_fail" -ne 0 ]; then
+        say_pass "ps5-nvme-ctl propaga errore con codice non-zero quando il controller rifiuta Set Features"
+    else
+        say_fail "ps5-nvme-ctl non ha propagato l'errore di rifiuto del controller"
+    fi
+
+    unset PS5_NVME_MOCK_FILE
+}
+
+test_ps5_m2_protection_cli() {
+    local cli_bin="$REPO_DIR/bin/ps5-m2-protection"
+    local mock_file="${SANDBOX_DIR}/nvme_mock_cli.state"
+    local conf_test="${SANDBOX_DIR}/test_m2_protection.conf"
+
+    cat << 'EOF' > "$mock_file"
+MN=Samsung SSD 980 PRO 1TB
+SN=S5GXNF0R123456
+FR=5B2QGXA7
+NWPC=1
+NSID=1
+NSZE=2000409264
+NCAP=2000409264
+NGUID=002538b123456789
+EUI64=0025381234567890
+WP_STATE=0
+EOF
+
+    cat << EOF > "$conf_test"
+M2_PROTECTION_ENABLED=1
+M2_CTRL_MODEL="Samsung SSD 980 PRO 1TB"
+M2_CTRL_SERIAL="S5GXNF0R123456"
+M2_NS_ID=1
+AUTO_PROTECT_ON_SHUTDOWN=1
+EOF
+
+    export PS5_NVME_MOCK_FILE="$mock_file"
+    export PS5_M2_PROTECTION_CONF="$conf_test"
+    export PS5_NVME_CTL_BIN="$REPO_DIR/resources/m2/ps5-nvme-ctl"
+    export PS5_M2_ALLOW_NONROOT=1
+
+    # Status SUPPORTED_UNPROTECTED
+    local out_st0
+    out_st0=$("$cli_bin" status 2>/dev/null || true)
+    if echo "$out_st0" | grep -q "SUPPORTED_UNPROTECTED"; then
+        say_pass "ps5-m2-protection status restituisce SUPPORTED_UNPROTECTED con stato 0"
+    else
+        say_fail "ps5-m2-protection status errato (atteso SUPPORTED_UNPROTECTED)"
+    fi
+
+    # Protect
+    if "$cli_bin" protect >/dev/null 2>&1; then
+        local out_st1
+        out_st1=$("$cli_bin" status 2>/dev/null || true)
+        if echo "$out_st1" | grep -q "SUPPORTED_PROTECTED"; then
+            say_pass "ps5-m2-protection protect attiva stato 1 e status restituisce SUPPORTED_PROTECTED"
+        else
+            say_fail "ps5-m2-protection status errato dopo protect"
+        fi
+    else
+        say_fail "ps5-m2-protection protect ha fallito l'attivazione"
+    fi
+
+    # Unprotect
+    if "$cli_bin" unprotect >/dev/null 2>&1; then
+        local out_unprot
+        out_unprot=$("$cli_bin" status 2>/dev/null || true)
+        if echo "$out_unprot" | grep -q "SUPPORTED_UNPROTECTED"; then
+            say_pass "ps5-m2-protection unprotect ripristina stato 0 e status restituisce SUPPORTED_UNPROTECTED"
+        else
+            say_fail "ps5-m2-protection status errato dopo unprotect"
+        fi
+    else
+        say_fail "ps5-m2-protection unprotect ha fallito"
+    fi
+
+    # Verify command
+    local out_ver
+    out_ver=$("$cli_bin" verify 2>/dev/null || true)
+    if echo "$out_ver" | grep -q "Stato Protezione"; then
+        say_pass "ps5-m2-protection verify interroga lo stato senza effettuare scritture"
+    else
+        say_fail "ps5-m2-protection verify output non conforme"
+    fi
+
+    # Test Mismatch
+    sed -i 's/M2_CTRL_SERIAL="S5GXNF0R123456"/M2_CTRL_SERIAL="DIFFERENT_SERIAL"/' "$conf_test"
+    local out_mismatch
+    out_mismatch=$("$cli_bin" status 2>&1 || true)
+    if echo "$out_mismatch" | grep -q "MISMATCH"; then
+        say_pass "ps5-m2-protection status rileva MISMATCH su discrepanza seriale"
+    else
+        say_fail "ps5-m2-protection non ha segnalato MISMATCH su seriale differente"
+    fi
+
+    # Test Unsupported
+    sed -i 's/M2_CTRL_SERIAL="DIFFERENT_SERIAL"/M2_CTRL_SERIAL="S5GXNF0R123456"/' "$conf_test"
+    sed -i 's/NWPC=1/NWPC=0/' "$mock_file"
+    local out_unsupp
+    out_unsupp=$("$cli_bin" status 2>&1 || true)
+    if echo "$out_unsupp" | grep -q "UNSUPPORTED"; then
+        say_pass "ps5-m2-protection status rileva UNSUPPORTED se NWPC bit 0 è assente"
+    else
+        say_fail "ps5-m2-protection non ha segnalato UNSUPPORTED su NWPC=0"
+    fi
+
+    unset PS5_NVME_MOCK_FILE PS5_M2_PROTECTION_CONF PS5_NVME_CTL_BIN PS5_M2_ALLOW_NONROOT
+}
+
+test_ps5_m2_migrate_protection_guard() {
+    local migrate_bin="$REPO_DIR/bin/ps5-m2-migrate"
+    local mock_file="${SANDBOX_DIR}/nvme_mock_migrate.state"
+
+    cat << 'EOF' > "$mock_file"
+MN=Samsung SSD 980 PRO 1TB
+SN=S5GXNF0R123456
+FR=5B2QGXA7
+NWPC=1
+NSID=1
+NSZE=2000409264
+NCAP=2000409264
+NGUID=002538b123456789
+EUI64=0025381234567890
+WP_STATE=1
+EOF
+
+    export PS5_NVME_MOCK_FILE="$mock_file"
+    export PS5_M2_ALLOW_NONROOT=1
+    export PS5_M2_ALLOW_MOCK=1
+    export PS5_M2_TARGET_DEV="/dev/mock"
+    export PS5_NVME_CTL_BIN="$REPO_DIR/resources/m2/ps5-nvme-ctl"
+
+    # Test init bloccato da protezione attiva (stato 1)
+    local out_init
+    out_init=$("$migrate_bin" init 2>&1 || true)
+    if echo "$out_init" | grep -q "Namespace Write Protection attivo" || echo "$out_init" | grep -q "protetto in scrittura"; then
+        say_pass "ps5-m2-migrate init interrompe l'operazione se il dispositivo M.2 è protetto"
+    else
+        say_fail "ps5-m2-migrate init non ha bloccato l'operazione su disco protetto"
+    fi
+
+    # Test install bloccato da protezione attiva (stato 1)
+    local out_install
+    out_install=$("$migrate_bin" install 2>&1 || true)
+    if echo "$out_install" | grep -q "Namespace Write Protection attivo" || echo "$out_install" | grep -q "protetto in scrittura"; then
+        say_pass "ps5-m2-migrate install interrompe l'operazione se il dispositivo M.2 è protetto"
+    else
+        say_fail "ps5-m2-migrate install non ha bloccato l'operazione su disco protetto"
+    fi
+
+    # Sblocco disco mock e verifica che init possa procedere senza abort di protezione
+    sed -i 's/WP_STATE=1/WP_STATE=0/' "$mock_file"
+    local out_unprot_init
+    out_unprot_init=$(echo "ANNULLA" | "$migrate_bin" init 2>&1 || true)
+    if echo "$out_unprot_init" | grep -q "Dispositivo di destinazione confermato" && ! echo "$out_unprot_init" | grep -q "protetto in scrittura"; then
+        say_pass "ps5-m2-migrate init supera la guardia di protezione quando il disco è sbloccato (stato 0)"
+    else
+        say_fail "ps5-m2-migrate init non ha superato la guardia su disco sbloccato"
+    fi
+
+    unset PS5_NVME_MOCK_FILE PS5_M2_ALLOW_NONROOT PS5_M2_ALLOW_MOCK PS5_M2_TARGET_DEV PS5_NVME_CTL_BIN
+}
+
+test_ps5_m2_boot_hook_protection() {
+    local hook_prot_script='
+getarg() {
+    case "$1" in
+        ps5.force_usb) echo "$MOCK_FORCE_USB" ;;
+        *) echo "" ;;
+    esac
+}
+ps5_kmsg() { :; }
+msg() { :; }
+resolve_device() {
+    case "$1" in
+        LABEL=cachyos-m2) echo "/dev/nvme0n1p1"; return 0 ;;
+        LABEL=cachyos) echo "/dev/sdd1"; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+mount() { return 0; }
+umount() { return 0; }
+rmdir() { return 0; }
+mkdir() { return 0; }
+
+run_hook() {
+    if [ "$(getarg ps5.force_usb)" = "1" ]; then
+        return 0
+    fi
+    local m2_dev="/dev/nvme0n1p1"
+    local m2_valid=1
+
+    local wp_state="$MOCK_WP_STATE"
+    if [ "$wp_state" = "1" ]; then
+        if [ "$MOCK_UNPROTECT_FAILS" = "1" ]; then
+            m2_valid=0
+        else
+            MOCK_WP_STATE="0"
+        fi
+    elif [ "$wp_state" = "2" ] || [ "$wp_state" = "3" ]; then
+        m2_valid=0
+    fi
+
+    if [ "$m2_valid" -eq 1 ]; then
+        root="$m2_dev"
+    else
+        root="LABEL=cachyos"
+    fi
+}
+
+# Caso A: force_usb=1 con disco protetto (stato 1) -> rimane protetto e root=LABEL=cachyos
+root="LABEL=cachyos"
+MOCK_FORCE_USB="1"
+MOCK_WP_STATE="1"
+MOCK_UNPROTECT_FAILS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] && [ "$MOCK_WP_STATE" = "1" ] || exit 20
+
+# Caso B: Disco protetto (stato 1) -> sblocco riuscito, root=/dev/nvme0n1p1
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="1"
+MOCK_UNPROTECT_FAILS="0"
+run_hook
+[ "$root" = "/dev/nvme0n1p1" ] && [ "$MOCK_WP_STATE" = "0" ] || exit 21
+
+# Caso C: Disco protetto (stato 1) ma sblocco fallito -> fallback USB root=LABEL=cachyos
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="1"
+MOCK_UNPROTECT_FAILS="1"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 22
+
+# Caso D: Disco con stato permanente (stato 3) -> rifiuto e fallback USB
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="3"
+MOCK_UNPROTECT_FAILS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 23
+
+exit 0
+'
+    if sh -c "$hook_prot_script"; then
+        say_pass "Hook ps5_m2_boot gestisce sblocco automatico, fallback USB su errori e rispetto di ps5.force_usb=1"
+    else
+        say_fail "Hook ps5_m2_boot ha fallito la logica di protezione in uno dei casi di test"
+    fi
+}
+
+test_ps5_m2_shutdown_hook() {
+    local shutdown_hook="$REPO_DIR/resources/m2/ps5-m2-protect.shutdown"
+    local mock_file="${SANDBOX_DIR}/nvme_mock_shutdown.state"
+    local conf_test="${SANDBOX_DIR}/test_shutdown.conf"
+
+    cat << 'EOF' > "$mock_file"
+MN=Samsung SSD 980 PRO 1TB
+SN=S5GXNF0R123456
+FR=5B2QGXA7
+NWPC=1
+NSID=1
+NSZE=2000409264
+NCAP=2000409264
+NGUID=002538b123456789
+EUI64=0025381234567890
+WP_STATE=0
+EOF
+
+    cat << EOF > "$conf_test"
+M2_PROTECTION_ENABLED=1
+M2_CTRL_MODEL="Samsung SSD 980 PRO 1TB"
+M2_CTRL_SERIAL="S5GXNF0R123456"
+M2_NS_ID=1
+AUTO_PROTECT_ON_SHUTDOWN=1
+VERBOSE_LOGGING=1
+EOF
+
+    export PS5_NVME_MOCK_FILE="$mock_file"
+    export PS5_NVME_CTL_BIN="$REPO_DIR/resources/m2/ps5-nvme-ctl"
+
+    sed "s|CONF=\"/etc/ps5-m2-protection.conf\"|CONF=\"$conf_test\"|" "$shutdown_hook" > "${SANDBOX_DIR}/shutdown_test.sh"
+    chmod +x "${SANDBOX_DIR}/shutdown_test.sh"
+
+    "${SANDBOX_DIR}/shutdown_test.sh" poweroff >/dev/null 2>&1
+    local st_post
+    st_post=$(grep "^WP_STATE=" "$mock_file" | cut -d'=' -f2)
+    if [ "$st_post" = "1" ]; then
+        say_pass "ps5-m2-protect riattiva la protezione reversibile (stato 1) durante poweroff"
+    else
+        say_fail "ps5-m2-protect non ha riattivato la protezione allo shutdown (st=$st_post)"
+    fi
+
+    # Test esecuzione con AUTO_PROTECT_ON_SHUTDOWN=0
+    sed -i 's/WP_STATE=1/WP_STATE=0/' "$mock_file"
+    sed -i 's/AUTO_PROTECT_ON_SHUTDOWN=1/AUTO_PROTECT_ON_SHUTDOWN=0/' "$conf_test"
+    "${SANDBOX_DIR}/shutdown_test.sh" reboot >/dev/null 2>&1
+    local st_skip
+    st_skip=$(grep "^WP_STATE=" "$mock_file" | cut -d'=' -f2)
+    if [ "$st_skip" = "0" ]; then
+        say_pass "ps5-m2-protect rispetta AUTO_PROTECT_ON_SHUTDOWN=0 lasciando il disco sbloccato"
+    else
+        say_fail "ps5-m2-protect ha modificato lo stato con AUTO_PROTECT_ON_SHUTDOWN=0"
+    fi
+
+    # Test esecuzione kexec
+    sed -i 's/AUTO_PROTECT_ON_SHUTDOWN=0/AUTO_PROTECT_ON_SHUTDOWN=1/' "$conf_test"
+    "${SANDBOX_DIR}/shutdown_test.sh" kexec >/dev/null 2>&1
+    local st_kexec
+    st_kexec=$(grep "^WP_STATE=" "$mock_file" | cut -d'=' -f2)
+    if [ "$st_kexec" = "0" ]; then
+        say_pass "ps5-m2-protect salta la protezione su shutdown di tipo kexec"
+    else
+        say_fail "ps5-m2-protect ha protetto il disco durante kexec"
+    fi
+
+    unset PS5_NVME_MOCK_FILE PS5_NVME_CTL_BIN
+}
+
+test_module_m2_protection() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/m2_protection.sh"
+
+    module_m2_protection_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    if [ -x "$MOCK_ROOT/usr/local/bin/ps5-nvme-ctl" ] && \
+       [ -x "$MOCK_ROOT/usr/local/sbin/ps5-m2-protection" ] && \
+       [ -x "$MOCK_ROOT/usr/lib/systemd/system-shutdown/ps5-m2-protect" ] && \
+       [ -f "$MOCK_ROOT/etc/ps5-m2-protection.conf" ]; then
+        say_pass "Modulo m2_protection installa correttamente ps5-nvme-ctl, ps5-m2-protection, shutdown hook e conf"
+    else
+        say_fail "Modulo m2_protection non ha installato tutti i componenti richiesti"
+    fi
+
+    if module_m2_protection_check "$MOCK_ROOT" "$MOCK_BOOT"; then
+        say_pass "module_m2_protection_check convalida con successo l'installazione del modulo"
+    else
+        say_fail "module_m2_protection_check ha fallito la convalida"
+    fi
+}
+
+# ------------------------------------------------------------------------------
 # Esecuzione della Suite
 # ------------------------------------------------------------------------------
 echo "=============================================================================="
@@ -1751,6 +2214,13 @@ run_test test_module_gamescope
 run_test test_module_session
 run_test test_module_m2
 run_test test_module_m2_hook_logic
+run_test test_m2_init_validation
+run_test test_ps5_nvme_ctl
+run_test test_ps5_m2_protection_cli
+run_test test_ps5_m2_migrate_protection_guard
+run_test test_ps5_m2_boot_hook_protection
+run_test test_ps5_m2_shutdown_hook
+run_test test_module_m2_protection
 run_test test_module_system
 run_test test_module_system_diag
 run_test test_runtime_logger
