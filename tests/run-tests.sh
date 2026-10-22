@@ -1554,6 +1554,12 @@ with open("'"$inspect_dir/main.cpio.zst"'", "wb") as out:
         say_fail "Hook ps5_m2_boot o config mancante o privo di validazione OS nel nuovo initrd.img"
     fi
 
+    if [ -f "$inspect_dir/bin/ps5-nvme-ctl" ] && [ -f "$inspect_dir/etc/ps5-m2-protection.conf" ]; then
+        say_pass "Helper ps5-nvme-ctl e configurazione /etc/ps5-m2-protection.conf iniettati con successo nel ramdisk"
+    else
+        say_fail "ps5-nvme-ctl o /etc/ps5-m2-protection.conf assente nel ramdisk"
+    fi
+
     if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-m2-migrate" ] && [ -x "$MOCK_ROOT/usr/local/sbin/ps5-m2-init" ]; then
         say_pass "Strumenti ps5-m2-migrate e ps5-m2-init installati in /usr/local/sbin"
     else
@@ -1849,6 +1855,33 @@ EOF
         say_fail "ps5-nvme-ctl non ha rifiutato lo stato permanente 3 con codice 2 (rc=$rc3)"
     fi
 
+    # Test di sicurezza: validazione rigorosa input non numerico (Criticità 5)
+    local rc_str=0
+    "$ctl_bin" set-feature /dev/mock foo 1 >/dev/null 2>&1 || rc_str=$?
+    if [ "$rc_str" -eq 2 ]; then
+        say_pass "ps5-nvme-ctl rifiuta rigorosamente input non numerico 'foo' (exit code 2)"
+    else
+        say_fail "ps5-nvme-ctl non ha rifiutato input 'foo' con codice 2 (rc=$rc_str)"
+    fi
+
+    # Test di sicurezza: validazione rigorosa esadecimali o formati alternativi (Criticità 5)
+    local rc_hex=0
+    "$ctl_bin" set-feature /dev/mock 0x0 1 >/dev/null 2>&1 || rc_hex=$?
+    if [ "$rc_hex" -eq 2 ]; then
+        say_pass "ps5-nvme-ctl rifiuta rigorosamente formati alternativi '0x0' (exit code 2)"
+    else
+        say_fail "ps5-nvme-ctl non ha rifiutato formato '0x0' con codice 2 (rc=$rc_hex)"
+    fi
+
+    # Test comando autonomo set-rw (Criticità 1)
+    local out_rw
+    out_rw=$("$ctl_bin" set-rw /dev/mock 2>/dev/null || true)
+    if echo "$out_rw" | grep -q "SET_RW=OK" && grep -q "BLK_RO=0" "$mock_file"; then
+        say_pass "ps5-nvme-ctl set-rw esegue correttamente l'azzeramento del flag read-only"
+    else
+        say_fail "ps5-nvme-ctl set-rw non ha azzerato BLK_RO o non ha restituito OK"
+    fi
+
     # Test errore controller: REJECT_SET_FEATURE=1
     echo "REJECT_SET_FEATURE=1" >> "$mock_file"
     local rc_fail=0
@@ -1885,6 +1918,9 @@ M2_PROTECTION_ENABLED=1
 M2_CTRL_MODEL="Samsung SSD 980 PRO 1TB"
 M2_CTRL_SERIAL="S5GXNF0R123456"
 M2_NS_ID=1
+M2_NS_NGUID="002538b123456789"
+M2_NS_EUI64="0025381234567890"
+M2_NS_SIZE_SECTORS=2000409264
 AUTO_PROTECT_ON_SHUTDOWN=1
 EOF
 
@@ -1937,7 +1973,7 @@ EOF
         say_fail "ps5-m2-protection verify output non conforme"
     fi
 
-    # Test Mismatch
+    # Test Mismatch seriale
     sed -i 's/M2_CTRL_SERIAL="S5GXNF0R123456"/M2_CTRL_SERIAL="DIFFERENT_SERIAL"/' "$conf_test"
     local out_mismatch
     out_mismatch=$("$cli_bin" status 2>&1 || true)
@@ -1946,9 +1982,42 @@ EOF
     else
         say_fail "ps5-m2-protection non ha segnalato MISMATCH su seriale differente"
     fi
+    sed -i 's/M2_CTRL_SERIAL="DIFFERENT_SERIAL"/M2_CTRL_SERIAL="S5GXNF0R123456"/' "$conf_test"
+
+    # Test Mismatch NGUID namespace (Criticità 4)
+    sed -i 's/M2_NS_NGUID="002538b123456789"/M2_NS_NGUID="DIFFERENT_NGUID"/' "$conf_test"
+    local out_nguid_mismatch
+    out_nguid_mismatch=$("$cli_bin" status 2>&1 || true)
+    if echo "$out_nguid_mismatch" | grep -q "MISMATCH"; then
+        say_pass "ps5-m2-protection status rileva MISMATCH su discrepanza NGUID"
+    else
+        say_fail "ps5-m2-protection non ha segnalato MISMATCH su NGUID differente"
+    fi
+    sed -i 's/M2_NS_NGUID="DIFFERENT_NGUID"/M2_NS_NGUID="002538b123456789"/' "$conf_test"
+
+    # Test Mismatch EUI64 namespace (Criticità 4)
+    sed -i 's/M2_NS_EUI64="0025381234567890"/M2_NS_EUI64="DIFFERENT_EUI64"/' "$conf_test"
+    local out_eui_mismatch
+    out_eui_mismatch=$("$cli_bin" status 2>&1 || true)
+    if echo "$out_eui_mismatch" | grep -q "MISMATCH"; then
+        say_pass "ps5-m2-protection status rileva MISMATCH su discrepanza EUI64"
+    else
+        say_fail "ps5-m2-protection non ha segnalato MISMATCH su EUI64 differente"
+    fi
+    sed -i 's/M2_NS_EUI64="DIFFERENT_EUI64"/M2_NS_EUI64="0025381234567890"/' "$conf_test"
+
+    # Test Mismatch Dimensione Settori NSZE (Criticità 4)
+    sed -i 's/M2_NS_SIZE_SECTORS=2000409264/M2_NS_SIZE_SECTORS=999999999/' "$conf_test"
+    local out_size_mismatch
+    out_size_mismatch=$("$cli_bin" status 2>&1 || true)
+    if echo "$out_size_mismatch" | grep -q "MISMATCH"; then
+        say_pass "ps5-m2-protection status rileva MISMATCH su discrepanza capacità namespace"
+    else
+        say_fail "ps5-m2-protection non ha segnalato MISMATCH su capacità differente"
+    fi
+    sed -i 's/M2_NS_SIZE_SECTORS=999999999/M2_NS_SIZE_SECTORS=2000409264/' "$conf_test"
 
     # Test Unsupported
-    sed -i 's/M2_CTRL_SERIAL="DIFFERENT_SERIAL"/M2_CTRL_SERIAL="S5GXNF0R123456"/' "$conf_test"
     sed -i 's/NWPC=1/NWPC=0/' "$mock_file"
     local out_unsupp
     out_unsupp=$("$cli_bin" status 2>&1 || true)
@@ -1978,7 +2047,20 @@ EUI64=0025381234567890
 WP_STATE=1
 EOF
 
+    local conf_migrate="${SANDBOX_DIR}/test_migrate_prot.conf"
+    cat << EOF > "$conf_migrate"
+M2_PROTECTION_ENABLED=1
+M2_CTRL_MODEL="Samsung SSD 980 PRO 1TB"
+M2_CTRL_SERIAL="S5GXNF0R123456"
+M2_NS_ID=1
+M2_NS_NGUID="002538b123456789"
+M2_NS_EUI64="0025381234567890"
+M2_NS_SIZE_SECTORS=2000409264
+AUTO_PROTECT_ON_SHUTDOWN=1
+EOF
+
     export PS5_NVME_MOCK_FILE="$mock_file"
+    export PS5_M2_PROTECTION_CONF="$conf_migrate"
     export PS5_M2_ALLOW_NONROOT=1
     export PS5_M2_ALLOW_MOCK=1
     export PS5_M2_TARGET_DEV="/dev/mock"
@@ -2012,7 +2094,7 @@ EOF
         say_fail "ps5-m2-migrate init non ha superato la guardia su disco sbloccato"
     fi
 
-    unset PS5_NVME_MOCK_FILE PS5_M2_ALLOW_NONROOT PS5_M2_ALLOW_MOCK PS5_M2_TARGET_DEV PS5_NVME_CTL_BIN
+    unset PS5_NVME_MOCK_FILE PS5_M2_PROTECTION_CONF PS5_M2_ALLOW_NONROOT PS5_M2_ALLOW_MOCK PS5_M2_TARGET_DEV PS5_NVME_CTL_BIN
 }
 
 test_ps5_m2_boot_hook_protection() {
@@ -2039,19 +2121,49 @@ mkdir() { return 0; }
 
 run_hook() {
     if [ "$(getarg ps5.force_usb)" = "1" ]; then
+        root="LABEL=cachyos"
         return 0
     fi
     local m2_dev="/dev/nvme0n1p1"
-    local m2_valid=1
+    local m2_valid=0
 
+    # 1. Verifica presenza helper (Criticità 3)
+    if [ "${MOCK_HAS_HELPER:-1}" != "1" ]; then
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # 2. Verifica configurazione presente e seriale valido (Criticità 2)
+    if [ "${MOCK_HAS_CONF:-1}" != "1" ]; then
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # 3. Verifica identità controller e namespace (Criticità 4)
+    if [ "${MOCK_IDENTITY_MISMATCH:-0}" = "1" ]; then
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # 4. Lettura stato (Criticità 3)
     local wp_state="$MOCK_WP_STATE"
     if [ "$wp_state" = "1" ]; then
-        if [ "$MOCK_UNPROTECT_FAILS" = "1" ]; then
+        if [ "${MOCK_UNPROTECT_FAILS:-0}" = "1" ]; then
+            m2_valid=0
+        elif [ "${MOCK_POST_VERIFY_FAILS:-0}" = "1" ]; then
             m2_valid=0
         else
             MOCK_WP_STATE="0"
+            MOCK_SET_RW_CALLED="1"
+            m2_valid=1
         fi
+    elif [ "$wp_state" = "0" ]; then
+        MOCK_SET_RW_CALLED="1"
+        m2_valid=1
     elif [ "$wp_state" = "2" ] || [ "$wp_state" = "3" ]; then
+        m2_valid=0
+    else
+        # Stato sconosciuto, errore get-feature o vuoto -> FAIL-CLOSED (Criticità 3)
         m2_valid=0
     fi
 
@@ -2067,37 +2179,75 @@ root="LABEL=cachyos"
 MOCK_FORCE_USB="1"
 MOCK_WP_STATE="1"
 MOCK_UNPROTECT_FAILS="0"
+MOCK_HAS_HELPER="1"
+MOCK_HAS_CONF="1"
 run_hook
 [ "$root" = "LABEL=cachyos" ] && [ "$MOCK_WP_STATE" = "1" ] || exit 20
 
-# Caso B: Disco protetto (stato 1) -> sblocco riuscito, root=/dev/nvme0n1p1
+# Caso B: Disco protetto (stato 1) -> sblocco riuscito, root=/dev/nvme0n1p1 e set-rw chiamato
 root="LABEL=cachyos"
 MOCK_FORCE_USB=""
 MOCK_WP_STATE="1"
 MOCK_UNPROTECT_FAILS="0"
+MOCK_SET_RW_CALLED="0"
 run_hook
-[ "$root" = "/dev/nvme0n1p1" ] && [ "$MOCK_WP_STATE" = "0" ] || exit 21
+[ "$root" = "/dev/nvme0n1p1" ] && [ "$MOCK_WP_STATE" = "0" ] && [ "$MOCK_SET_RW_CALLED" = "1" ] || exit 21
 
-# Caso C: Disco protetto (stato 1) ma sblocco fallito -> fallback USB root=LABEL=cachyos
+# Caso C: Helper ps5-nvme-ctl assente -> FAIL-CLOSED root=LABEL=cachyos (Criticità 3)
 root="LABEL=cachyos"
 MOCK_FORCE_USB=""
 MOCK_WP_STATE="1"
-MOCK_UNPROTECT_FAILS="1"
+MOCK_HAS_HELPER="0"
 run_hook
 [ "$root" = "LABEL=cachyos" ] || exit 22
+MOCK_HAS_HELPER="1"
 
-# Caso D: Disco con stato permanente (stato 3) -> rifiuto e fallback USB
+# Caso D: Configurazione assente o vuota -> FAIL-CLOSED root=LABEL=cachyos (Criticità 2)
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="1"
+MOCK_HAS_CONF="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 23
+MOCK_HAS_CONF="1"
+
+# Caso E: Discrepanza identità completa controller/namespace -> FAIL-CLOSED (Criticità 4)
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="1"
+MOCK_IDENTITY_MISMATCH="1"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 24
+MOCK_IDENTITY_MISMATCH="0"
+
+# Caso F: Stato protezione illeggibile o sconosciuto -> FAIL-CLOSED (Criticità 3)
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="UNKNOWN"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 25
+
+# Caso G: Post-verifica post sblocco fallita -> FAIL-CLOSED (Criticità 3)
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_WP_STATE="1"
+MOCK_POST_VERIFY_FAILS="1"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 26
+MOCK_POST_VERIFY_FAILS="0"
+
+# Caso H: Disco con stato permanente (stato 3) -> rifiuto e fallback USB
 root="LABEL=cachyos"
 MOCK_FORCE_USB=""
 MOCK_WP_STATE="3"
 MOCK_UNPROTECT_FAILS="0"
 run_hook
-[ "$root" = "LABEL=cachyos" ] || exit 23
+[ "$root" = "LABEL=cachyos" ] || exit 27
 
 exit 0
 '
     if sh -c "$hook_prot_script"; then
-        say_pass "Hook ps5_m2_boot gestisce sblocco automatico, fallback USB su errori e rispetto di ps5.force_usb=1"
+        say_pass "Hook ps5_m2_boot applica politica fail-closed su assenza helper, conf, identità o stato sconosciuto"
     else
         say_fail "Hook ps5_m2_boot ha fallito la logica di protezione in uno dei casi di test"
     fi
@@ -2126,9 +2276,40 @@ M2_PROTECTION_ENABLED=1
 M2_CTRL_MODEL="Samsung SSD 980 PRO 1TB"
 M2_CTRL_SERIAL="S5GXNF0R123456"
 M2_NS_ID=1
+M2_NS_NGUID="002538b123456789"
+M2_NS_EUI64="0025381234567890"
+M2_NS_SIZE_SECTORS=2000409264
 AUTO_PROTECT_ON_SHUTDOWN=1
 VERBOSE_LOGGING=1
 EOF
+
+    export PS5_NVME_MOCK_FILE="$mock_file"
+    export PS5_NVME_CTL_BIN="$REPO_DIR/resources/m2/ps5-nvme-ctl"
+
+    sed "s|CONF=\"/etc/ps5-m2-protection.conf\"|CONF=\"$conf_test\"|" "$shutdown_hook" > "${SANDBOX_DIR}/shutdown_test.sh"
+    chmod +x "${SANDBOX_DIR}/shutdown_test.sh"
+
+    "${SANDBOX_DIR}/shutdown_test.sh" poweroff >/dev/null 2>&1
+    local st_post
+    st_post=$(grep "^WP_STATE=" "$mock_file" | cut -d'=' -f2)
+    if [ "$st_post" = "1" ]; then
+        say_pass "ps5-m2-protect riattiva la protezione reversibile (stato 1) durante poweroff"
+    else
+        say_fail "ps5-m2-protect non ha riattivato la protezione allo shutdown (st=$st_post)"
+    fi
+
+    # Test discrepanza NGUID namespace allo shutdown (Criticità 4)
+    sed -i 's/WP_STATE=1/WP_STATE=0/' "$mock_file"
+    sed -i 's/M2_NS_NGUID="002538b123456789"/M2_NS_NGUID="WRONG_NGUID"/' "$conf_test"
+    "${SANDBOX_DIR}/shutdown_test.sh" poweroff >/dev/null 2>&1
+    local st_mismatch_nguid
+    st_mismatch_nguid=$(grep "^WP_STATE=" "$mock_file" | cut -d'=' -f2)
+    if [ "$st_mismatch_nguid" = "0" ]; then
+        say_pass "ps5-m2-protect annulla l'attivazione della protezione se l'identità NGUID non coincide allo shutdown"
+    else
+        say_fail "ps5-m2-protect ha applicato la protezione nonostante discrepanza NGUID allo shutdown"
+    fi
+    sed -i 's/M2_NS_NGUID="WRONG_NGUID"/M2_NS_NGUID="002538b123456789"/' "$conf_test"
 
     export PS5_NVME_MOCK_FILE="$mock_file"
     export PS5_NVME_CTL_BIN="$REPO_DIR/resources/m2/ps5-nvme-ctl"

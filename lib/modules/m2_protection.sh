@@ -40,12 +40,14 @@ module_m2_protection_run() {
         fi
     fi
 
-    # 2. Installazione helper a basso livello in /usr/local/bin
-    sudo mkdir -p "${cachy_mnt}/usr/local/bin"
+    # 2. Installazione helper a basso livello in /usr/local/bin e /usr/local/sbin
+    sudo mkdir -p "${cachy_mnt}/usr/local/bin" "${cachy_mnt}/usr/local/sbin"
     if [ -f "$ctl_bin" ]; then
         sudo cp -f "$ctl_bin" "${cachy_mnt}/usr/local/bin/ps5-nvme-ctl"
         sudo chmod 0755 "${cachy_mnt}/usr/local/bin/ps5-nvme-ctl"
-        log_info "Installato /usr/local/bin/ps5-nvme-ctl"
+        sudo cp -f "$ctl_bin" "${cachy_mnt}/usr/local/sbin/ps5-nvme-ctl"
+        sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-nvme-ctl"
+        log_info "Installato /usr/local/bin/ps5-nvme-ctl e /usr/local/sbin/ps5-nvme-ctl"
     else
         log_warn "Binario ps5-nvme-ctl non trovato in $ctl_bin."
     fi

@@ -199,27 +199,34 @@ ensure_m2_init_bin() {
 # Controllo preventivo Namespace Write Protection
 check_m2_protection() {
     local dev="$1"
-    local ctl_tool=""
-    for p in /usr/local/sbin/ps5-m2-protection "$REPO_DIR/bin/ps5-m2-protection" /usr/local/bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
-        if [ -x "$p" ]; then ctl_tool="$p"; break; fi
-    done
-
-    [ -n "$ctl_tool" ] || return 0
-
     local is_protected=0
-    if [[ "$ctl_tool" == *"ps5-m2-protection"* ]]; then
+
+    # 1. Controllo tramite ps5-m2-protection CLI se disponibile
+    local prot_cli=""
+    for p in /usr/local/sbin/ps5-m2-protection "$REPO_DIR/bin/ps5-m2-protection"; do
+        if [ -x "$p" ]; then prot_cli="$p"; break; fi
+    done
+    if [ -n "$prot_cli" ]; then
         local out
-        out=$("$ctl_tool" status 2>/dev/null || true)
+        out=$("$prot_cli" status 2>/dev/null || true)
         if echo "$out" | grep -q "SUPPORTED_PROTECTED"; then
             is_protected=1
         fi
-    elif [[ "$ctl_tool" == *"ps5-nvme-ctl"* ]]; then
-        local out
-        out=$("$ctl_tool" get-feature "$dev" 1 2>/dev/null || true)
-        local st
-        st=$(echo "$out" | awk -F'=' '$1=="WP_STATE"{print $2}')
-        if [ "$st" = "1" ] || [ "$st" = "2" ] || [ "$st" = "3" ]; then
-            is_protected=1
+    fi
+
+    # 2. Controllo diretto hardware tramite ps5-nvme-ctl
+    if [ "$is_protected" -eq 0 ]; then
+        local nvme_ctl=""
+        for p in /usr/local/sbin/ps5-nvme-ctl /usr/local/bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
+            if [ -x "$p" ]; then nvme_ctl="$p"; break; fi
+        done
+        if [ -n "$nvme_ctl" ]; then
+            local out st
+            out=$("$nvme_ctl" get-feature "$dev" 1 2>/dev/null || true)
+            st=$(echo "$out" | awk -F'=' '$1=="WP_STATE"{print $2}')
+            if [ "$st" = "1" ] || [ "$st" = "2" ] || [ "$st" = "3" ]; then
+                is_protected=1
+            fi
         fi
     fi
 

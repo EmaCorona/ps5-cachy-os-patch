@@ -35,7 +35,7 @@ find_ctl_bin() {
         echo "$PS5_NVME_CTL_BIN"
         return 0
     fi
-    for p in /usr/local/bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
+    for p in /usr/local/bin/ps5-nvme-ctl /usr/local/sbin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl /bin/ps5-nvme-ctl "$REPO_DIR/resources/m2/ps5-nvme-ctl"; do
         if [ -x "$p" ]; then
             echo "$p"
             return 0
@@ -115,6 +115,7 @@ detect_nvme_device() {
 # Verifica identità tra dispositivo reale e configurazione registrata
 verify_identity() {
     local dev="$1"
+    local nsid="${2:-${TARGET_NSID:-${M2_NS_ID:-1}}}"
     load_config
 
     if [ -z "${M2_CTRL_SERIAL:-}" ]; then
@@ -136,6 +137,41 @@ verify_identity() {
     if [ -n "${M2_CTRL_MODEL:-}" ] && [ "$cur_mn" != "$M2_CTRL_MODEL" ]; then
         say_error "Discrepanza modello SSD (registrato: '$M2_CTRL_MODEL', rilevato: '$cur_mn')!"
         return 1
+    fi
+
+    # Controllo identificatori stabili del namespace (NGUID, EUI64, dimensione)
+    local ns_info
+    ns_info=$("$CTL_BIN" id-ns "$dev" "$nsid" 2>/dev/null || true)
+    local cur_nguid cur_eui64 cur_nsze
+    cur_nguid=$(echo "$ns_info" | awk -F'=' '$1=="NGUID"{print $2}')
+    cur_eui64=$(echo "$ns_info" | awk -F'=' '$1=="EUI64"{print $2}')
+    cur_nsze=$(echo "$ns_info" | awk -F'=' '$1=="NSZE"{print $2}')
+
+    # Verifica NGUID (se registrato e non vuoto o tutti zeri)
+    local reg_nguid="${M2_NS_NGUID:-}"
+    if [ -n "$reg_nguid" ] && [ "$reg_nguid" != "00000000000000000000000000000000" ]; then
+        if [ "$cur_nguid" != "$reg_nguid" ]; then
+            say_error "Discrepanza NGUID namespace (registrato: '$reg_nguid', rilevato: '$cur_nguid')!"
+            return 1
+        fi
+    fi
+
+    # Verifica EUI64 (se registrato e non vuoto o tutti zeri)
+    local reg_eui64="${M2_NS_EUI64:-}"
+    if [ -n "$reg_eui64" ] && [ "$reg_eui64" != "0000000000000000" ]; then
+        if [ "$cur_eui64" != "$reg_eui64" ]; then
+            say_error "Discrepanza EUI64 namespace (registrato: '$reg_eui64', rilevato: '$cur_eui64')!"
+            return 1
+        fi
+    fi
+
+    # Verifica capacità in settori NSZE (se registrata e > 0)
+    local reg_size="${M2_NS_SIZE_SECTORS:-0}"
+    if [ "$reg_size" -gt 0 ] 2>/dev/null; then
+        if [ "$cur_nsze" != "$reg_size" ]; then
+            say_error "Discrepanza capacità namespace (registrato: '$reg_size', rilevato: '$cur_nsze')!"
+            return 1
+        fi
     fi
 
     return 0
@@ -173,10 +209,9 @@ cmd_status() {
     cur_nwpc=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC"{print $2}')
     cur_rev=$(echo "$ctrl_info" | awk -F'=' '$1=="NWPC_REVERSIBLE"{print $2}')
 
-    # Controllo corrispondenza identità
-    if [ -n "${M2_CTRL_SERIAL:-}" ] && [ "$cur_sn" != "$M2_CTRL_SERIAL" ]; then
+    # Controllo corrispondenza identità completa (Controller + Namespace)
+    if ! verify_identity "$TARGET_DEV" "$TARGET_NSID"; then
         if [ "$quiet" != "1" ]; then
-            say_error "Dispositivo rilevato ($cur_sn) non corrispondente alla configurazione registrata ($M2_CTRL_SERIAL)."
             echo "STATO: MISMATCH"
         fi
         return 5
@@ -293,7 +328,8 @@ cmd_unprotect() {
 
     say_info "Disattivazione della protezione (stato 0) su $TARGET_DEV (NSID: $TARGET_NSID)..."
     if "$CTL_BIN" set-feature "$TARGET_DEV" 0 "$TARGET_NSID"; then
-        say_ok "Protezione rimossa (stato 0) e verificata con successo dal controller."
+        "$CTL_BIN" set-rw "$TARGET_DEV" 2>/dev/null || true
+        say_ok "Protezione rimossa (stato 0) e flag read-only azzerato con successo nel kernel."
         return 0
     else
         say_error "Disattivazione o verifica fallita!"

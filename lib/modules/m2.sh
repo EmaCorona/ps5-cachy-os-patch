@@ -94,7 +94,20 @@ except Exception:
         chmod 0755 "$tmp_dir/rootfs/bin/ps5-nvme-ctl"
     fi
 
-    # Genera lo script del hook ps5_m2_boot
+    # Inclusione della configurazione di protezione /etc/ps5-m2-protection.conf nel ramdisk
+    local conf_source=""
+    if [ -n "$cachy_mnt" ] && [ -f "$cachy_mnt/etc/ps5-m2-protection.conf" ]; then
+        conf_source="$cachy_mnt/etc/ps5-m2-protection.conf"
+    elif [ -f "${repo_dir}/resources/m2/ps5-m2-protection.conf" ]; then
+        conf_source="${repo_dir}/resources/m2/ps5-m2-protection.conf"
+    fi
+    if [ -n "$conf_source" ] && [ -f "$conf_source" ]; then
+        cp -f "$conf_source" "$tmp_dir/rootfs/etc/ps5-m2-protection.conf"
+        chmod 0644 "$tmp_dir/rootfs/etc/ps5-m2-protection.conf"
+        log_info "Inclusa configurazione /etc/ps5-m2-protection.conf nel ramdisk"
+    fi
+
+    # Genera lo script del hook ps5_m2_boot con politica fail-closed rigorosa
     cat << 'EOF' > "$hook_dest"
 #!/usr/bin/ash
 # ==============================================================================
@@ -135,76 +148,192 @@ run_hook() {
                     m2_valid=1
                 fi
             fi
+            # Se la configurazione non era nel ramdisk, fallback su quella verificata del filesystem M.2
+            if [ ! -f /etc/ps5-m2-protection.conf ] && [ -f /mnt_m2_check/etc/ps5-m2-protection.conf ]; then
+                cp -f /mnt_m2_check/etc/ps5-m2-protection.conf /etc/ps5-m2-protection.conf 2>/dev/null || true
+            fi
             umount -l /mnt_m2_check 2>/dev/null || true
         fi
         rmdir /mnt_m2_check 2>/dev/null || true
     fi
 
-    if [ "$m2_valid" -eq 1 ]; then
-        # Controllo e gestione della Namespace Write Protection (Feature 0x84)
-        local ctl_tool=""
-        for p in /bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl /usr/local/bin/ps5-nvme-ctl; do
-            if [ -x "$p" ]; then
-                ctl_tool="$p"
-                break
-            fi
-        done
-
-        if [ -n "$ctl_tool" ]; then
-            local parent_dev="$m2_dev"
-            case "$m2_dev" in
-                *p[0-9]*) parent_dev="${m2_dev%p[0-9]*}" ;;
-                *[0-9]*)
-                    if [ -b "${m2_dev%p*}" ]; then parent_dev="${m2_dev%p*}"; fi
-                    ;;
-            esac
-
-            local wp_out wp_state
-            wp_out=$("$ctl_tool" get-feature "$parent_dev" 1 2>/dev/null || true)
-            wp_state=$(echo "$wp_out" | awk -F'=' '$1=="WP_STATE"{print $2}')
-
-            if [ "$wp_state" = "1" ]; then
-                ps5_kmsg "SSD M.2 protetto da scrittura (stato 1). Verifica identità prima dello sblocco..."
-                local proceed_unprotect=1
-                if [ -f /etc/ps5-m2-protection.conf ]; then
-                    local reg_sn
-                    reg_sn=$(awk -F'=' '$1=="M2_CTRL_SERIAL"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
-                    if [ -n "$reg_sn" ]; then
-                        local cand_info cand_sn
-                        cand_info=$("$ctl_tool" id-ctrl "$parent_dev" 2>/dev/null || true)
-                        cand_sn=$(echo "$cand_info" | awk -F'=' '$1=="SN"{print $2}')
-                        if [ "$cand_sn" != "$reg_sn" ]; then
-                            ps5_kmsg "Discrepanza identità M.2 ($cand_sn != $reg_sn). Sblocco rifiutato!"
-                            proceed_unprotect=0
-                        fi
-                    fi
-                fi
-
-                if [ "$proceed_unprotect" -eq 1 ] && "$ctl_tool" set-feature "$parent_dev" 0 1 >/dev/null 2>&1; then
-                    ps5_kmsg "Protezione NVMe rimossa con successo (stato 0)."
-                else
-                    ps5_kmsg "Disattivazione protezione fallita. Rifiuto montaggio in scrittura su M.2!"
-                    m2_valid=0
-                fi
-            elif [ "$wp_state" = "2" ] || [ "$wp_state" = "3" ]; then
-                ps5_kmsg "Stato di protezione inatteso o permanente ($wp_state). Fallback di sicurezza su USB!"
-                m2_valid=0
-            elif [ "$wp_state" = "0" ]; then
-                ps5_kmsg "SSD M.2 non protetto (stato 0)."
-            fi
-        fi
-    fi
-
-    if [ "$m2_valid" -eq 1 ]; then
-        ps5_kmsg "SSD M.2 rilevato e verificato ($m2_dev). Avvio prioritario da SSD M.2..."
-        root="$m2_dev"
-    else
+    # Se l'OS su M.2 non è integro, fallback immediato su USB (fail-closed)
+    if [ "$m2_valid" -ne 1 ]; then
         if [ -n "$m2_dev" ]; then
-            ps5_kmsg "SSD M.2 ($m2_dev) rilevato ma privo di OS valido o protetto in scrittura."
+            ps5_kmsg "SSD M.2 ($m2_dev) rilevato ma privo di OS valido (incompleto o corrotto)."
             ps5_kmsg "Fallback automatico di emergenza su chiavetta USB..."
         else
             ps5_kmsg "Nessun SSD M.2 con Linux rilevato. Avvio regolare da chiavetta USB..."
         fi
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # Politica FAIL-CLOSED: m2_valid azzerato fino a completamento positivo di tutte le verifiche
+    m2_valid=0
+
+    # Ricerca dell'helper autonomo ps5-nvme-ctl
+    local ctl_tool=""
+    for p in /bin/ps5-nvme-ctl /usr/bin/ps5-nvme-ctl /usr/local/bin/ps5-nvme-ctl; do
+        if [ -x "$p" ]; then
+            ctl_tool="$p"
+            break
+        fi
+    done
+
+    if [ -z "$ctl_tool" ]; then
+        ps5_kmsg "ERRORE: Helper ps5-nvme-ctl assente nel ramdisk. Sblocco impossibile: fallback USB (fail-closed)."
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # Verifica configurazione di protezione /etc/ps5-m2-protection.conf
+    if [ ! -f /etc/ps5-m2-protection.conf ]; then
+        ps5_kmsg "ERRORE: Configurazione /etc/ps5-m2-protection.conf assente. Sblocco vietato (fail-closed): fallback USB."
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # Parsing dei parametri di configurazione registrati
+    local reg_enabled reg_sn reg_mn reg_nsid reg_nguid reg_eui64 reg_size
+    reg_enabled=$(awk -F'=' '$1=="M2_PROTECTION_ENABLED"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+    reg_sn=$(awk -F'=' '$1=="M2_CTRL_SERIAL"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+    reg_mn=$(awk -F'=' '$1=="M2_CTRL_MODEL"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+    reg_nsid=$(awk -F'=' '$1=="M2_NS_ID"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || echo 1)
+    reg_nguid=$(awk -F'=' '$1=="M2_NS_NGUID"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+    reg_eui64=$(awk -F'=' '$1=="M2_NS_EUI64"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || true)
+    reg_size=$(awk -F'=' '$1=="M2_NS_SIZE_SECTORS"{gsub(/["'\'' ]/,"",$2); print $2}' /etc/ps5-m2-protection.conf 2>/dev/null || echo 0)
+
+    [ -z "$reg_nsid" ] && reg_nsid=1
+
+    if [ "$reg_enabled" != "1" ] || [ -z "$reg_sn" ]; then
+        ps5_kmsg "Modulo di protezione disabilitato o nessun seriale registrato. Fallback USB (fail-closed)."
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # Risoluzione del block device genitore (es: /dev/nvme0n1 da /dev/nvme0n1p1)
+    local parent_dev="$m2_dev"
+    case "$m2_dev" in
+        *p[0-9]*) parent_dev="${m2_dev%p[0-9]*}" ;;
+        *[0-9]*)
+            if [ -b "${m2_dev%p*}" ]; then parent_dev="${m2_dev%p*}"; fi
+            ;;
+    esac
+
+    # Risoluzione del controller character device (es: /dev/nvme0 da /dev/nvme0n1)
+    local ctrl_dev=""
+    case "$parent_dev" in
+        *n[0-9]*) ctrl_dev="${parent_dev%n[0-9]*}" ;;
+        *) ctrl_dev="$parent_dev" ;;
+    esac
+
+    local admin_dev="$parent_dev"
+    if [ -n "$ctrl_dev" ] && [ -c "$ctrl_dev" ]; then
+        admin_dev="$ctrl_dev"
+    fi
+
+    # Verifica rigorosa dell'identità del controller (SN e MN)
+    local ctrl_info cand_sn cand_mn
+    ctrl_info=$("$ctl_tool" id-ctrl "$admin_dev" 2>/dev/null || true)
+    cand_sn=$(echo "$ctrl_info" | awk -F'=' '$1=="SN"{print $2}')
+    cand_mn=$(echo "$ctrl_info" | awk -F'=' '$1=="MN"{print $2}')
+
+    if [ -z "$cand_sn" ] || [ "$cand_sn" != "$reg_sn" ]; then
+        ps5_kmsg "Discrepanza seriale controller M.2 ($cand_sn != $reg_sn). Sblocco tassativamente rifiutato!"
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    if [ -n "$reg_mn" ] && [ "$cand_mn" != "$reg_mn" ]; then
+        ps5_kmsg "Discrepanza modello controller M.2 ($cand_mn != $reg_mn). Sblocco tassativamente rifiutato!"
+        root="LABEL=cachyos"
+        return 0
+    fi
+
+    # Verifica rigorosa dell'identità del namespace (NGUID, EUI64, capacità)
+    local ns_info cand_nguid cand_eui64 cand_nsze
+    ns_info=$("$ctl_tool" id-ns "$admin_dev" "$reg_nsid" 2>/dev/null || true)
+    cand_nguid=$(echo "$ns_info" | awk -F'=' '$1=="NGUID"{print $2}')
+    cand_eui64=$(echo "$ns_info" | awk -F'=' '$1=="EUI64"{print $2}')
+    cand_nsze=$(echo "$ns_info" | awk -F'=' '$1=="NSZE"{print $2}')
+
+    if [ -n "$reg_nguid" ] && [ "$reg_nguid" != "00000000000000000000000000000000" ]; then
+        if [ "$cand_nguid" != "$reg_nguid" ]; then
+            ps5_kmsg "Discrepanza NGUID namespace M.2 ($cand_nguid != $reg_nguid). Sblocco rifiutato!"
+            root="LABEL=cachyos"
+            return 0
+        fi
+    fi
+
+    if [ -n "$reg_eui64" ] && [ "$reg_eui64" != "0000000000000000" ]; then
+        if [ "$cand_eui64" != "$reg_eui64" ]; then
+            ps5_kmsg "Discrepanza EUI64 namespace M.2 ($cand_eui64 != $reg_eui64). Sblocco rifiutato!"
+            root="LABEL=cachyos"
+            return 0
+        fi
+    fi
+
+    if [ "$reg_size" -gt 0 ] 2>/dev/null; then
+        if [ "$cand_nsze" != "$reg_size" ]; then
+            ps5_kmsg "Discrepanza capacità namespace M.2 ($cand_nsze != $reg_size). Sblocco rifiutato!"
+            root="LABEL=cachyos"
+            return 0
+        fi
+    fi
+
+    # Interrogazione stato di protezione corrente Feature 0x84
+    local wp_out wp_state
+    wp_out=$("$ctl_tool" get-feature "$admin_dev" "$reg_nsid" 2>/dev/null || true)
+    wp_state=$(echo "$wp_out" | awk -F'=' '$1=="WP_STATE"{print $2}')
+
+    if [ "$wp_state" = "1" ]; then
+        ps5_kmsg "SSD M.2 protetto da scrittura (stato 1). Identità verificata: invio sblocco (stato 0)..."
+        if "$ctl_tool" set-feature "$admin_dev" 0 "$reg_nsid" >/dev/null 2>&1; then
+            # Verifica post-sblocco obbligatoria con get-feature
+            local post_out post_state
+            post_out=$("$ctl_tool" get-feature "$admin_dev" "$reg_nsid" 2>/dev/null || true)
+            post_state=$(echo "$post_out" | awk -F'=' '$1=="WP_STATE"{print $2}')
+
+            if [ "$post_state" = "0" ]; then
+                ps5_kmsg "Protezione NVMe hardware rimossa con successo (stato 0)."
+                # Aggiornamento stato di sola lettura del block device nel kernel Linux
+                "$ctl_tool" set-rw "$parent_dev" >/dev/null 2>&1 || true
+                if command -v blockdev >/dev/null 2>&1; then
+                    blockdev --setrw "$parent_dev" 2>/dev/null || true
+                fi
+                # Notifica rescan controller in sysfs se disponibile
+                local base_dev="${parent_dev##*/}"
+                if [ -f "/sys/class/block/$base_dev/device/rescan_controller" ]; then
+                    echo 1 > "/sys/class/block/$base_dev/device/rescan_controller" 2>/dev/null || true
+                elif [ -n "$ctrl_dev" ] && [ -f "/sys/class/nvme/${ctrl_dev##*/}/rescan_controller" ]; then
+                    echo 1 > "/sys/class/nvme/${ctrl_dev##*/}/rescan_controller" 2>/dev/null || true
+                fi
+                udevadm settle --timeout=3 2>/dev/null || true
+
+                m2_valid=1
+            else
+                ps5_kmsg "ERRORE: Verifica post-sblocco fallita (stato $post_state != 0). Rifiuto avvio M.2!"
+                m2_valid=0
+            fi
+        else
+            ps5_kmsg "ERRORE: Comando di sblocco fallito dal controller. Rifiuto avvio M.2!"
+            m2_valid=0
+        fi
+    elif [ "$wp_state" = "0" ]; then
+        ps5_kmsg "SSD M.2 non protetto da scrittura (stato 0). Identità verificata."
+        "$ctl_tool" set-rw "$parent_dev" >/dev/null 2>&1 || true
+        m2_valid=1
+    else
+        ps5_kmsg "Stato di protezione inatteso, sconosciuto o illeggibile ($wp_state). Fallback USB di sicurezza!"
+        m2_valid=0
+    fi
+
+    if [ "$m2_valid" -eq 1 ]; then
+        ps5_kmsg "SSD M.2 verificato e sbloccato in lettura/scrittura ($m2_dev). Avvio prioritario da SSD M.2..."
+        root="$m2_dev"
+    else
+        ps5_kmsg "Condizioni di sicurezza non soddisfatte per SSD M.2. Fallback automatico su chiavetta USB..."
         root="LABEL=cachyos"
     fi
 }
