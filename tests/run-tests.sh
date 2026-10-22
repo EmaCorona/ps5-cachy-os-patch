@@ -1209,14 +1209,17 @@ test_module_bluetooth() {
     local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
     local svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
     local fw_svc="$MOCK_ROOT/etc/systemd/system/ps5-bluetooth-firmware.service"
+    local bt_conf="$MOCK_ROOT/etc/bluetooth/main.conf"
     if [ -x "$quiet" ] && sh -n "$quiet" && grep -q "btmgmt --index" "$quiet" && \
        ! grep -q '/address' "$quiet" && \
        grep -q "After=bluetooth.service ps5-bluetooth-firmware.service" "$svc" && \
        [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ] && \
-       [ -f "$fw_svc" ] && ! grep -q "modprobe -r btusb" "$fw_svc"; then
-        say_pass "ps5-bt-quiet installato e ps5-bluetooth-firmware evita reset distruttivo btusb"
+       [ -f "$fw_svc" ] && grep -q "modprobe -r btusb" "$fw_svc" && \
+       [ -f "$bt_conf" ] && grep -q "AutoEnable=true" "$bt_conf" && \
+       ! grep -q '\[ -z "\$addr" \] ||' "$quiet"; then
+        say_pass "ps5-bt-quiet installato e ps5-bluetooth-firmware ricarica btusb con AutoEnable attivo"
     else
-        say_fail "ps5-bt-quiet o ps5-bluetooth-firmware non configurati correttamente o con reset btusb attivo"
+        say_fail "ps5-bt-quiet, main.conf o ps5-bluetooth-firmware non configurati correttamente"
     fi
 }
 

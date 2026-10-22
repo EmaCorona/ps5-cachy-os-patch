@@ -225,6 +225,9 @@ ln -sf /dev/null /etc/systemd/system/first-boot.service 2>/dev/null || true
 # Clear failed state on systemd units from dirty shutdowns or previous crashes
 systemctl reset-failed 2>/dev/null || true
 
+# Sblocca preventivamente rfkill bluetooth per evitare soft-block dopo crash anomali
+rfkill unblock bluetooth 2>/dev/null || true
+
 ps5_log boot info "===== NUOVO BOOT PS5 ===== kernel=$(uname -r 2>/dev/null) cmdline=\"$(cat /proc/cmdline 2>/dev/null)\""
 ps5_log boot info "vram.txt=$(cat /boot/efi/vram.txt 2>/dev/null || echo n/a) next-session=$(cat /home/steam/.config/ps5-next-session 2>/dev/null || echo n/a)"
 
