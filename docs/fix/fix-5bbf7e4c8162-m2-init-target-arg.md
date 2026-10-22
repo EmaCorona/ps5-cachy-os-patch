@@ -1,5 +1,6 @@
 # Fix: convalida del dispositivo target dinamico in ps5-m2-init
 
+> **Commit:** [`5bbf7e4c8162`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/5bbf7e4c81620a46826b8baa197c8a5ab7e73033)  
 > **Data:** 22 ottobre 2026  
 > **File principali:** [`resources/m2/m2_init.c`](../../resources/m2/m2_init.c), [`resources/m2/ps5-m2-init`](../../resources/m2/ps5-m2-init)
 
