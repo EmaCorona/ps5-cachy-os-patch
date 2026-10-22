@@ -15,7 +15,7 @@ source "$REPO_DIR/lib/core/backup.sh"
 
 # Caricamento dinamico dei moduli
 MODULES_DIR="$REPO_DIR/lib/modules"
-ALL_MODULES=(cleanup vram firstboot bluetooth ethernet wifi fan kde gamescope session system)
+ALL_MODULES=(cleanup vram m2 firstboot bluetooth ethernet wifi fan kde gamescope session system)
 
 for mod in "${ALL_MODULES[@]}"; do
     if [ -f "$MODULES_DIR/${mod}.sh" ]; then
@@ -29,12 +29,14 @@ Uso / Usage: sudo $0 [OPZIONI]
 
 Master Patch Script modulare per CachyOS Linux su PlayStation 5.
 Risolve: crash Wi-Fi mt7921e, ventola al massimo, deadlock systemd, crash Gamescope,
-schermata blu first-boot, permessi sudo, VRAM e diagnostic dump.
+avvio prioritario SSD M.2 con fallback USB, schermata blu first-boot, permessi sudo, VRAM e diagnostic dump.
 
 Opzioni:
   --all                 (Predefinito) Esegue l'intera pipeline di patching
-  --module, -m <nome>   Esegue solo il modulo specificato (es: vram, fan, session)
+  --module, -m <nome>   Esegue solo il modulo specificato (es: m2, vram, fan, session)
   --list-modules, -l    Elenca tutti i moduli disponibili con descrizione
+  --root, -r <path>     Specifica manualmente il punto di mount della rootfs CachyOS
+  --boot, -b <path>     Specifica manualmente il punto di mount della partizione boot FAT32
   --skip-fsck           Salta il controllo di integrità del filesystem ext4
   --dry-run             Esegue il controllo di stato senza apportare modifiche
   --help, -h            Mostra questa guida ed esce
@@ -44,7 +46,8 @@ Moduli disponibili:
 
 Esempi:
   sudo $0
-  sudo $0 --module fan
+  sudo $0 --module m2
+  sudo $0 --root /run/media/emacorona/cachyos3 --boot /run/media/emacorona/boot3
   sudo $0 --module session --skip-fsck
 EOF
 }
@@ -65,6 +68,8 @@ SELECTED_MODULES=()
 DO_ALL=1
 SKIP_FSCK=0
 DRY_RUN=0
+OVERRIDE_ROOT=""
+OVERRIDE_BOOT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -88,6 +93,22 @@ while [[ $# -gt 0 ]]; do
             DO_ALL=1
             shift
             ;;
+        --root|-r)
+            if [ -z "${2:-}" ]; then
+                log_error "Opzione --root richiede il percorso della partizione rootfs."
+                exit 1
+            fi
+            OVERRIDE_ROOT="$2"
+            shift 2
+            ;;
+        --boot|-b)
+            if [ -z "${2:-}" ]; then
+                log_error "Opzione --boot richiede il percorso della partizione boot."
+                exit 1
+            fi
+            OVERRIDE_BOOT="$2"
+            shift 2
+            ;;
         --module|-m)
             if [ -z "${2:-}" ]; then
                 log_error "Opzione --module richiede il nome di un modulo."
@@ -109,7 +130,9 @@ check_root
 
 log_step "Avvio ps5-cachy-os-patch (PlayStation 5 Oberon APU)..."
 
-# Rilevamento partizioni e mount
+# Rilevamento partizioni e mount (con eventuale override da CLI)
+[ -n "$OVERRIDE_ROOT" ] && CACHY_MNT="$OVERRIDE_ROOT"
+[ -n "$OVERRIDE_BOOT" ] && BOOT_MNT="$OVERRIDE_BOOT"
 detect_mounts
 
 if [ -z "$CACHY_MNT" ] || [ ! -d "$CACHY_MNT" ]; then

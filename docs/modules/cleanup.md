@@ -20,7 +20,16 @@ Il modulo `cleanup` ripulisce lo stato lasciato da arresti anomali e installa un
 6. Crea `/home/steam/.config`, cancella l'alert del fallback precedente e scrive `desktop` in `ps5-next-session`; imposta ownership `1000:1000` e permessi `0644` sulla configurazione.
 7. Elimina la configurazione KWin `kwinoutputconfig.json` se presente, in modo che una configurazione display 4K conservata dall'utente non blocchi il tentativo di avvio con la baseline video prevista.
 8. Elimina i file di coredump accumulati in `/var/lib/systemd/coredump` e i file nella cache di crash DrKonqi dell'utente Steam.
-9. Installa lo script di pulizia early-boot `ps5-boot-cleanup` e la relativa unit systemd, abilitata tramite symlink in `basic.target.wants`. Lo script runtime ripete una parte della pulizia: rimuove lock/socket temporanei, marker di sessione e bridge, autostart legacy, alcuni binari/configurazioni obsolete e coredump. Non replica tutte le operazioni eseguite dal patcher: in particolare non sanitizza `/etc/ps5-gamescope.conf` e non rimuove `ps5-drm-setup` da `/usr/local/bin`.
+9. Sanitizza il drop-in `/etc/systemd/system/getty@tty1.service.d/autologin.conf` per garantire la sola sintassi compatibile standard `agetty` senza flag non supportati (come `--clear`).
+10. Rimuove mountpoint temporanei orfani (`/mnt/cachyos_m2`, `/mnt/ps5_cachyos_src`, `/mnt/ps5_image_src`, `/mnt_m2_check`, `/tmp/kexec_mnt`) e distacca eventuali loop device residui legati alle immagini disco.
+11. Aggiunge `nvme_core.default_ps_max_latency_us=0` in `cmdline.txt` per prevenire i freeze APST del controller NVMe.
+12. Neutralizza il wizard interattivo first-boot che sequestra `tty1`:
+    - Disabilita e rimuove `multi-user.target.wants/first-boot.service`;
+    - Maschera `etc/systemd/system/first-boot.service` indirizzandolo a `/dev/null`;
+    - Crea i marker di completamento `/etc/ps5-first-boot-done`, `/etc/ps5-firstboot-done` e `/var/lib/cachyos-firstboot-done`;
+    - Neutralizza `/usr/local/sbin/first-boot-setup` sostituendolo con uno stub a uscita immediata (`exit 0`).
+13. Rimuove file journal frammentati o corrotti (`/var/log/journal/*/*.journal~`) generati da spegnimenti anomali.
+14. Installa lo script di pulizia early-boot `ps5-boot-cleanup` e la relativa unit systemd, abilitata tramite symlink in `basic.target.wants`. Lo script runtime ripete la bonifica a ogni boot: termina preventivamente dialog/wizard su tty1, ripete la verifica dei flag first-boot, esegue `systemctl reset-failed`, rimuove lock/socket temporanei, marker di sessione e bridge, autostart legacy, coredump, file journal corrotti, cache video KScreen 4K, mountpoint/loop device orfani e garantisce permessi `0777`/`0666` su `/var/log/ps5`.
 
 ## File e unità generate
 

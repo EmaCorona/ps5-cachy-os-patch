@@ -2,22 +2,30 @@
 
 Questo file raccoglie le regole operative condivise per gli agenti AI che analizzano o modificano il repository. Le istruzioni sono organizzate in sezioni indipendenti, così da poterle ampliare nel tempo senza stravolgere la struttura esistente.
 
-## Regola obbligatoria: Gitflow per ogni nuova feature o fix
+## Regola obbligatoria: Gitflow per ogni nuova feature, fix o branch di documentazione
 
-**Ogni feature o fix deve essere implementata su un branch dedicato. Non sviluppare direttamente su `main` e non integrare il lavoro su `main` senza che l'utente abbia prima testato la modifica e dato un'approvazione esplicita.**
+**Ogni feature, fix o modifica alla documentazione deve essere implementata su un branch dedicato. Non sviluppare direttamente su `main` e non integrare il lavoro su `main` senza che l'utente abbia prima testato/revisionato la modifica e dato un'approvazione esplicita.**
 
 ### Flusso operativo obbligatorio
 
 1. **Parti da `main` aggiornato.** Prima di iniziare, recupera lo stato remoto più recente e crea il branch di lavoro a partire da esso.
-2. **Crea un branch con il prefisso corretto.** Usa `feature/<slug-descrittivo>` per una nuova funzionalità e `fix/<slug-descrittivo>` per una correzione. Scegli uno slug breve e specifico, coerente con lo stile Git del repository. Se esiste già un branch per lo stesso lavoro, verifica che sia quello giusto prima di riutilizzarlo.
-3. **Sviluppa esclusivamente sul branch dedicato.** Implementazione, test e documentazione correlata devono essere aggiunti lì. Non fare commit diretti su `main`, non spostare il branch `main` e non integrare in anticipo modifiche solo perché i test automatici passano.
+2. **Crea un branch con il prefisso corretto.** Usa `feature/<slug-descrittivo>` per una nuova funzionalità, `fix/<slug-descrittivo>` per una correzione e `docs/<slug-descrittivo>` per modifiche o aggiunte alla documentazione. Scegli uno slug breve e specifico, coerente con lo stile Git del repository. Se esiste già un branch per lo stesso lavoro, verifica che sia quello giusto prima di riutilizzarlo.
+3. **Sviluppa esclusivamente sul branch dedicato e sincronizza sempre il remoto.** Implementazione, test e documentazione correlata devono essere aggiunti lì. Non fare commit diretti su `main`, non spostare il branch `main` e non integrare in anticipo modifiche solo perché i test automatici passano. **Ogni commit creato in locale sul branch dedicato deve essere tempestivamente pushato anche sul corrispondente branch remoto (`origin/feature/...`, `origin/fix/...`, `origin/docs/...`).** Non lasciare commit solo in locale.
 4. **Mantieni documentazione e test nello stesso lavoro.** Per ogni fix rispetta la regola di documentazione in `docs/fix/` e aggiorna `docs/fix/README.md`; se sono interessati moduli, aggiorna anche le relative schede in `docs/modules/`. Aggiungi o aggiorna i test pertinenti e non dichiarare verifiche mai eseguite.
-5. **Concludi l'implementazione senza fare merge.** Rivedi il diff, esegui le verifiche disponibili e comunica all'utente il branch, il riepilogo delle modifiche e i risultati dei test, distinguendo i test automatici dalle prove richieste sull'hardware reale. Lascia le modifiche sul branch dedicato in attesa che l'utente possa testarle.
+5. **Concludi l'implementazione senza fare merge.** Rivedi il diff, esegui le verifiche disponibili e comunica all'utente il branch, il riepilogo delle modifiche e i risultati dei test, distinguendo i test automatici dalle prove richieste sull'hardware reale. Lascia le modifiche sul branch dedicato (pushato su remoto) in attesa che l'utente possa testarle.
 6. **Attendi l'approvazione esplicita dell'utente.** Il merge verso `main` è vietato fino a quando l'utente non ha testato il lavoro e non ha dato chiaramente l'OK all'integrazione. Test verdi, CI superata, una richiesta di implementazione o il silenzio dell'utente non equivalgono ad autorizzazione. Se l'OK non è stato dato, non fare merge, non chiudere il lavoro come integrato e non cancellare il branch.
 7. **Dopo l'OK, prepara l'integrazione.** Controlla se `main` è avanzato nel frattempo. Integra gli eventuali aggiornamenti in modo sicuro, risolvi eventuali conflitti senza perdere il comportamento approvato ed esegui nuovamente i controlli pertinenti prima di procedere.
-8. **Prima di integrare, riduci il lavoro a un solo commit.** Tutti i commit appartenenti alla feature/fix devono essere consolidati in un unico commit che rappresenti l'intero cambiamento approvato. Su `main` deve arrivare un solo commit per quella feature/fix, non la sequenza dei commit intermedi. Usa la modalità di squash/integrrazione equivalente disponibile nel flusso Git del repository e verifica il risultato prima di aggiornare `main`.
-9. **Scrivi un nuovo messaggio di commit descrittivo.** Il messaggio deve seguire lo stile del repository (per esempio `fix(area): descrizione della correzione` oppure `feat(area): descrizione della funzionalità`) e spiegare il risultato ottenuto. **Non scrivere nel titolo o nel corpo che i commit sono stati squashati, accorpati o riscritti**, né indicare quanti commit originali erano presenti. Il messaggio deve descrivere esclusivamente la feature/fix realizzata.
-10. **Verifica il risultato dopo l'integrazione.** Conferma che `main` contenga un solo commit per la modifica, che il messaggio sia pertinente, che documentazione e test siano inclusi e che il branch punti al risultato atteso. Comunica all'utente il commit finale e il link GitHub.
+8. **Prima di integrare, riduci il lavoro a un solo commit.** Tutti i commit appartenenti alla feature/fix/docs devono essere consolidati in un unico commit che rappresenti l'intero cambiamento approvato. Su `main` deve arrivare un solo commit per quella feature/fix/docs, non la sequenza dei commit intermedi. Usa la modalità di squash/integrazione equivalente disponibile nel flusso Git del repository e verifica il risultato prima di aggiornare `main`.
+9. **Scrivi un nuovo messaggio di commit descrittivo.** Il messaggio deve seguire lo stile del repository (per esempio `fix(area): descrizione della correzione`, `feat(area): descrizione della funzionalità` o `docs(area): descrizione della documentazione`) e spiegare il risultato ottenuto. **Non scrivere nel titolo o nel corpo che i commit sono stati squashati, accorpati o riscritti**, né indicare quanti commit originali erano presenti. Il messaggio deve descrivere esclusivamente la feature/fix/docs realizzata.
+10. **Verifica il risultato dopo l'integrazione e pusha su `main`.** Conferma che `main` contenga un solo commit per la modifica, che il messaggio sia pertinente, che documentazione e test siano inclusi e che il branch punti al risultato atteso. Esegui il push di `main` su `origin` e comunica all'utente il commit finale e il link GitHub.
+11. **Eliminazione obbligatoria del branch di lavoro.** Subito dopo aver completato l'integrazione e il push su `main`, il branch di lavoro (`feature/*`, `fix/*` o `docs/*`) deve essere obbligatoriamente eliminato sia dal repository locale (`git branch -d <branch>`) sia da quello remoto (`git push origin --delete <branch>`). Nessun branch integrato deve rimanere attivo o orfano dopo l'avvenuto merge su `main`.
+
+### Regola specifica per i branch di documentazione (`docs/*`)
+
+I branch con prefisso `docs/` seguono l'intero flusso Gitflow sopra descritto (partenza da `main`, branch dedicato, push remoto a ogni commit, divieto di merge anticipato, attesa approvazione esplicita dell'utente, squash a singolo commit prima del merge su `main`).
+A essi si applica una **regola tassativa aggiuntiva**:
+- **Nei branch `docs/*` possono essere creati o modificati ESCLUSIVAMENTE file di documentazione** (come file Markdown `.md`, schede in `docs/`, `README.md`, guide e diagrammi).
+- **È SEVERAMENTE VIETATO toccare, creare o modificare qualsiasi file contenente codice** (inclusi script shell `.sh`, sorgenti C/C++, Makefile, file di servizio systemd, configurazioni di sistema, ecc.), **neanche per cambiare commenti o docstring all'interno del codice sorgente**. Qualsiasi modifica che tocchi codice, commenti nel codice o file eseguibili deve obbligatoriamente passare da un branch `feature/` o `fix/`.
 
 ### Regola generale per ogni richiesta di squash
 
@@ -66,6 +74,22 @@ Se un modulo non dispone ancora di una scheda documentale, creala in `docs/modul
 ### Requisito di completamento
 
 Una fix è documentata soltanto quando la scheda in `docs/fix/` e la voce in `docs/fix/README.md` sono state aggiunte o aggiornate, la documentazione del modulo interessato è allineata e i riferimenti sono stati verificati. Mantieni il livello di precisione, la struttura e il tono tecnico delle schede già presenti: descrizioni concrete e verificabili, nessuna affermazione non dimostrata e nessun test dichiarato come superato senza averne osservato il risultato.
+
+## Regola obbligatoria: isolamento e sanificazione continua degli errori tramite cleanup
+
+**Ogni volta che dall'analisi dei log si riscontra un errore, un blocco di processo o una condizione che potrebbe essere bloccante per gli avvii successivi (es. wizard di setup/dialog su tty, lock orfani, drop-in corrotti, loop device o mountpoint residui, filesystem o journal frammentati, configurazioni video non allineate o crash marker), è obbligatorio estendere gli script che si occupano di ripulire lo stato del sistema.**
+
+La bonifica deve essere sempre implementata su entrambi i livelli:
+1. **Livello Host (`lib/modules/cleanup.sh`)**: eseguito durante l'applicazione delle patch da PC, per sanificare filesystem, flag, symlink di systemd e configurazioni prima ancora che la chiavetta venga inserita nella PS5.
+2. **Livello Runtime early-boot (`/usr/local/sbin/ps5-boot-cleanup`)**: eseguito in automatico all'avvio della PS5 tramite `ps5-boot-cleanup.service` prima dell'avvio delle sessioni utente, per neutralizzare processi bloccanti orfani (kill preventivo di dialog o wizard interattivi), smontare mountpoint pendenti, ripulire lock e ripristinare uno stato di boot garantito e funzionante.
+
+Procedura operativa obbligatoria:
+1. **Analisi e diagnosi della traccia di errore nei log**: Identifica con precisione la causa scatenante (processi pendenti su tty1, file marker mancanti o con nomenclatura non allineata come `ps5-first-boot-done`, loop device non deallocati, file journal sporchi dopo crash).
+2. **Estensione combinata dei componenti di cleanup**:
+   - Aggiorna `lib/modules/cleanup.sh` per eliminare la causa alla radice e applicare le contromisure preventive sui file del rootfs.
+   - Aggiorna il generatore interno dello script `/usr/local/sbin/ps5-boot-cleanup` in `lib/modules/cleanup.sh` affinché ogni singolo avvio su PS5 sia protetto anche in caso di crash anomalo o interruzione brutale dell'alimentazione.
+3. **Garantire l'indipendenza e l'immunità tra gli avvii**: Nessun errore derivante da test precedenti, branch alternativi, feature sperimentali o arresti imprevisti deve poter corrompere o impedire gli avvii successivi del sistema.
+4. **Aggiornamento della test suite (`tests/run-tests.sh`)**: Aggiungi test automatizzati che simulino la presenza dell'errore bloccante o dello stato orfano e verifichino che il modulo di cleanup lo bonifichi con successo.
 
 ## Come estendere questo file
 

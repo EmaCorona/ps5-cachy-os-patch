@@ -46,9 +46,13 @@ L'orchestratore modulare supporta l'esecuzione selettiva, verifiche preventive s
 ./ps5-cachy-os-patch.sh --list-modules
 
 # Esegue esclusivamente un modulo specifico
+sudo ./ps5-cachy-os-patch.sh --module m2
 sudo ./ps5-cachy-os-patch.sh --module fan
 sudo ./ps5-cachy-os-patch.sh --module session
 sudo ./ps5-cachy-os-patch.sh --module wifi
+
+# Specifica manualmente i percorsi dei mountpoint rootfs e boot FAT32
+sudo ./ps5-cachy-os-patch.sh --root /run/media/emacorona/cachyos3 --boot /run/media/emacorona/boot3
 
 # Modalità Dry-Run (controlla lo stato senza applicare le configurazioni dei moduli; i log possono essere aggiornati)
 sudo ./ps5-cachy-os-patch.sh --dry-run
@@ -71,6 +75,7 @@ Il codice è organizzato in `lib/`:
 | :--- | :--- | :--- |
 | **[`cleanup`](docs/modules/cleanup.md)** | [`lib/modules/cleanup.sh`](lib/modules/cleanup.sh) | Rimuove lock/PID/socket orfani, autostart e binari residui, bonifica coredump, sanitizza `/etc/ps5-gamescope.conf`, imposta `desktop` come sessione predefinita e abilita `ps5-boot-cleanup.service`. |
 | **[`vram`](docs/modules/vram.md)** | [`lib/modules/vram.sh`](lib/modules/vram.sh) | Scrive il valore `0x100000000` (4 GiB) in `vram.txt` sulla partizione di boot; l'effetto finale dipende dal loader e dal kernel utilizzati. |
+| **[`m2`](docs/modules/m2.md)** | [`lib/modules/m2.sh`](lib/modules/m2.sh) | Inietta il hook mkinitcpio `ps5_m2_boot` in `initrd.img` per l'avvio prioritario da SSD M.2 interno (NVMe) con fallback automatico e trasparente su USB in assenza dell'SSD; include la suite di migrazione `ps5-m2-migrate` e `ps5-m2-init`. |
 | **[`firstboot`](docs/modules/firstboot.md)** | [`lib/modules/firstboot.sh`](lib/modules/firstboot.sh) | Disabilita il wizard a finestre di primo avvio di CachyOS per evitare blocchi e schermate blu in assenza di controller configurati. |
 | **[`bluetooth`](docs/modules/bluetooth.md)** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Configura il caricamento sicuro del firmware Bluetooth (evitando il reset distruttivo dell'hub USB) e il servizio `ps5-bt-quiet`, che identifica le interfacce presenti, disattiva quella fantasma quando riconosciuta e prova ad attivare il controller valido. |
 | **[`ethernet`](docs/modules/ethernet.md)** | [`lib/modules/ethernet.sh`](lib/modules/ethernet.sh) | Crea profili NetworkManager per Ethernet, disabilita IPv6 nei profili generati, configura `systemd-timesyncd` con server NTP e fallback HTTP Date e raccoglie diagnostica di rete post-boot (`ps5-net-diag`). |

@@ -1,0 +1,762 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# bin/ps5-m2-migrate — Strumento di migrazione CachyOS su SSD M.2 interno per PS5
+# ==============================================================================
+# Supporta Firmware PS5 13.60, partizionamento compatibile LBA 65536,
+# diagnostica preventiva non-distruttiva, clonazione live e fallback kexec.
+# ==============================================================================
+set -euo pipefail
+
+# 0. Costanti e Percorsi
+VERSION="1.0.0"
+STATE_FILE="${PS5_M2_STATE_FILE:-/boot/efi/ps5-m2-migration.state}"
+ALT_STATE_FILE="/var/lib/ps5-m2-migration/state"
+LOG_FILE="${PS5_M2_LOG_FILE:-/var/log/ps5-m2-migration.log}"
+ALT_LOG_FILE="/boot/efi/ps5-m2-migration.log"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd || echo "")
+MNT_TARGET="/mnt/ps5_m2_target"
+KEXEC_MNT="/tmp/ps5_kexec_mnt"
+
+# Caricamento modulo di logging centralizzato se presente
+[ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
+
+# Stili terminale
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+_log() {
+    local level="$1"
+    local msg="$2"
+    local ts
+    ts=$(date -Is 2>/dev/null || date)
+    if [ -w "$(dirname "$LOG_FILE")" 2>/dev/null ] || [ -w "$LOG_FILE" 2>/dev/null ]; then
+        mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+        echo "[$ts] [$level] $msg" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+    if [ -d "/boot/efi" ] && [ -w "/boot/efi" 2>/dev/null ]; then
+        echo "[$ts] [$level] $msg" >> "$ALT_LOG_FILE" 2>/dev/null || true
+    fi
+    ps5_log m2 "$level" "$msg" 2>/dev/null || true
+}
+
+say_info()    { echo -e "${CYAN}[INFO]${NC} $1"; _log "INFO" "$1"; }
+say_step()    { echo -e "\n${BOLD}${BLUE}==> $1${NC}"; _log "STEP" "$1"; }
+say_ok()      { echo -e "${GREEN}[OK]${NC} $1"; _log "INFO" "$1"; }
+say_warn()    { echo -e "${YELLOW}[ATTENZIONE]${NC} $1"; _log "WARN" "$1"; }
+say_error()   { echo -e "${RED}[ERRORE]${NC} $1" >&2; _log "ERROR" "$1"; }
+say_abort()   { echo -e "\n${RED}[ABORT]${NC} $1" >&2; _log "FATAL" "$1"; exit 1; }
+
+# 1. Gestione Stato Persistente
+_get_state_path() {
+    if [ -n "${PS5_M2_STATE_FILE:-}" ]; then
+        echo "$PS5_M2_STATE_FILE"
+        return 0
+    fi
+    if [ -d "/boot/efi" ] && [ -w "/boot/efi" ]; then
+        echo "$STATE_FILE"
+    else
+        mkdir -p "/var/lib/ps5-m2-migration" 2>/dev/null || true
+        echo "$ALT_STATE_FILE"
+    fi
+}
+
+get_state() {
+    local sf
+    sf=$(_get_state_path)
+    if [ -f "$sf" ]; then
+        cat "$sf" | tr -d '\r\n '
+    else
+        echo "NOT_STARTED"
+    fi
+}
+
+set_state() {
+    local val="$1"
+    local sf
+    sf=$(_get_state_path)
+    mkdir -p "$(dirname "$sf")" 2>/dev/null || true
+    echo "$val" > "$sf" 2>/dev/null || true
+    say_info "Stato migrazione aggiornato: $val"
+}
+
+# 2. Rilevamento e Validazione Hardware Non-Distruttivo
+detect_target_device() {
+    # Se specificato via variabile d'ambiente (utile per override o test)
+    if [ -n "${PS5_M2_TARGET_DEV:-}" ]; then
+        TARGET_DEV="$PS5_M2_TARGET_DEV"
+        return 0
+    fi
+
+    local root_src efi_src
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+    efi_src=$(findmnt -n -o SOURCE /boot/efi 2>/dev/null || true)
+
+    local root_disk efi_disk
+    root_disk=$(lsblk -no PKNAME "$root_src" 2>/dev/null || echo "$root_src")
+    [ -n "$root_disk" ] && root_disk="/dev/${root_disk#/dev/}"
+    efi_disk=$(lsblk -no PKNAME "$efi_src" 2>/dev/null || echo "$efi_src")
+    [ -n "$efi_disk" ] && efi_disk="/dev/${efi_disk#/dev/}"
+
+    # Cerca candidati NVMe (TRAN=nvme, TYPE=disk)
+    local candidates=()
+    while read -r name tran type; do
+        [ "$type" = "disk" ] || continue
+        if [ "$tran" = "nvme" ] || [ "${PS5_M2_ALLOW_MOCK:-0}" = "1" ]; then
+            local full_dev="/dev/$name"
+            # Esclude tassativamente i dischi contenenti la root corrente o /boot/efi
+            if [ "$full_dev" != "$root_disk" ] && [ "$full_dev" != "$efi_disk" ]; then
+                candidates+=("$full_dev")
+            fi
+        fi
+    done < <(lsblk -d -n -o NAME,TRAN,TYPE 2>/dev/null || true)
+
+    if [ ${#candidates[@]} -eq 0 ]; then
+        TARGET_DEV=""
+        return 1
+    elif [ ${#candidates[@]} -eq 1 ]; then
+        TARGET_DEV="${candidates[0]}"
+        return 0
+    else
+        # Se ce ne sono molteplici, seleziona /dev/nvme0n1 se presente tra i candidati
+        for c in "${candidates[@]}"; do
+            if [ "$c" = "/dev/nvme0n1" ]; then
+                TARGET_DEV="$c"
+                return 0
+            fi
+        done
+        TARGET_DEV="${candidates[0]}"
+        return 0
+    fi
+}
+
+get_device_info() {
+    local dev="$1"
+    DEV_MODEL=$(lsblk -d -no MODEL "$dev" 2>/dev/null | xargs || echo "Sconosciuto")
+    DEV_SIZE=$(lsblk -d -no SIZE "$dev" 2>/dev/null | xargs || echo "Sconosciuta")
+    DEV_TRAN=$(lsblk -d -no TRAN "$dev" 2>/dev/null | xargs || echo "Sconosciuto")
+}
+
+prompt_confirm() {
+    local prompt_msg="$1"
+    if [ "${PS5_M2_AUTO_CONFIRM:-0}" = "1" ]; then
+        say_warn "Conferma automatica attiva (PS5_M2_AUTO_CONFIRM=1)."
+        return 0
+    fi
+    echo -e "\n${YELLOW}${BOLD}$prompt_msg${NC}"
+    echo -e "Per procedere digita esattamente ${BOLD}CONFERMO${NC} e premi Invio (qualsiasi altra risposta annulla): "
+    read -r resp
+    if [ "$resp" != "CONFERMO" ]; then
+        say_abort "Operazione annullata dall'utente."
+    fi
+}
+
+# 3. Compilatore integrato per ps5-m2-init
+ensure_m2_init_bin() {
+    if [ -x "/usr/local/sbin/ps5-m2-init" ]; then
+        M2_INIT_BIN="/usr/local/sbin/ps5-m2-init"
+        return 0
+    fi
+    if [ -n "$REPO_DIR" ] && [ -x "$REPO_DIR/bin/ps5-m2-init" ]; then
+        M2_INIT_BIN="$REPO_DIR/bin/ps5-m2-init"
+        return 0
+    fi
+
+    # Cerca il sorgente C nel repository o in percorsi standard
+    local src_file=""
+    for p in "$REPO_DIR/src/m2_init.c" "/usr/local/src/ps5-m2-init.c" "/tmp/m2_init.c"; do
+        if [ -f "$p" ]; then src_file="$p"; break; fi
+    done
+
+    if [ -z "$src_file" ]; then
+        say_abort "Binario ps5-m2-init non trovato e sorgente m2_init.c non reperibile."
+    fi
+
+    say_info "Compilazione automatica di ps5-m2-init da $src_file..."
+    if ! command -v gcc >/dev/null 2>&1; then
+        say_abort "Compilatore GCC non disponibile. Installa gcc con 'pacman -S gcc' per compilare ps5-m2-init."
+    fi
+
+    local out_bin="/usr/local/sbin/ps5-m2-init"
+    if [ ! -w "/usr/local/sbin" ]; then
+        out_bin="/tmp/ps5-m2-init"
+    fi
+    gcc -O2 "$src_file" -lz -o "$out_bin"
+    chmod 0755 "$out_bin"
+    M2_INIT_BIN="$out_bin"
+    say_ok "Compilazione ps5-m2-init riuscita ($M2_INIT_BIN)."
+}
+
+# ==============================================================================
+# FASI DEL WORKFLOW
+# ==============================================================================
+
+# FASE 1: ANALYZE (Sola Lettura)
+cmd_analyze() {
+    say_step "Fase 1: Analisi Diagnostica Preventiva (Sola Lettura)"
+
+    local current_state
+    current_state=$(get_state)
+    echo -e "  Stato migrazione attuale : ${BOLD}${current_state}${NC}"
+
+    # 1. Ispezione sorgente attiva (USB)
+    local root_src efi_src
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null || echo "non rilevato")
+    efi_src=$(findmnt -n -o SOURCE /boot/efi 2>/dev/null || echo "non rilevato")
+    echo -e "  Rootfs corrente (/)      : ${BOLD}${root_src}${NC} ($(findmnt -n -o FSTYPE / 2>/dev/null || echo '?'))"
+    echo -e "  Partizione EFI (/boot/efi): ${BOLD}${efi_src}${NC}"
+
+    if [ "$efi_src" = "non rilevato" ]; then
+        say_warn "Partizione /boot/efi non montata! Assicurati che la partizione FAT32 di boot sia accessibile."
+    fi
+
+    # 2. Rilevamento Target M.2
+    if detect_target_device; then
+        get_device_info "$TARGET_DEV"
+        echo -e "\n  ${GREEN}Dispositivo M.2 NVMe Rilevato:${NC}"
+        echo -e "    Device                 : ${BOLD}${TARGET_DEV}${NC}"
+        echo -e "    Modello                : ${BOLD}${DEV_MODEL}${NC}"
+        echo -e "    Capacità               : ${BOLD}${DEV_SIZE}${NC}"
+        echo -e "    Tipo Trasporto         : ${BOLD}${DEV_TRAN}${NC}"
+
+        # Verifica di sicurezza anti-collisione
+        if [ "$DEV_TRAN" != "nvme" ] && [ "${PS5_M2_ALLOW_MOCK:-0}" != "1" ]; then
+            say_abort "Il dispositivo $TARGET_DEV non ha trasporto NVMe (rilevato: $DEV_TRAN)!"
+        fi
+
+        echo -e "\n  Partizioni attuali su $TARGET_DEV:"
+        lsblk "$TARGET_DEV" 2>/dev/null || echo "    Nessuna partizione leggibile."
+    else
+        say_warn "Nessun dispositivo SSD M.2 NVMe target rilevato automaticamente."
+        say_info "Se l'SSD M.2 e' collegato, verifica che il driver del kernel sia attivo ('lsblk -d')."
+        say_info "Puoi forzare il device target impostando: export PS5_M2_TARGET_DEV=/dev/nvme0n1"
+    fi
+
+    # 3. Verifica strumenti necessari
+    echo -e "\n  Controllo strumenti di sistema:"
+    for tool in mkfs.ext4 e2fsck blkid findmnt; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            echo -e "    [✓] $tool presente"
+        else
+            echo -e "    [✗] ${RED}$tool MANCANTE${NC}"
+        fi
+    done
+    if command -v rsync >/dev/null 2>&1; then
+        echo -e "    [✓] rsync presente (motore di sincronizzazione live primario)"
+    elif command -v tar >/dev/null 2>&1; then
+        echo -e "    [✓] tar presente (motore nativo resiliente --one-file-system)"
+    else
+        echo -e "    [i] né rsync né tar presenti (verrà usato il motore di riserva cp -a)"
+    fi
+    if command -v kexec >/dev/null 2>&1; then
+        echo -e "    [✓] kexec presente (per test di avvio a caldo)"
+    else
+        echo -e "    [i] kexec non presente (il test di boot potrà essere saltato)"
+    fi
+
+    # 4. Verifica kernel e bootloader
+    echo -e "\n  Verifica file di boot (PS5 Firmware 13.60):"
+    if [ -f "/boot/efi/cmdline.txt" ]; then
+        echo -e "    [✓] /boot/efi/cmdline.txt presente:"
+        echo -e "        ${CYAN}$(cat /boot/efi/cmdline.txt | tr -d '\r\n')${NC}"
+    else
+        echo -e "    [!] /boot/efi/cmdline.txt non trovato in /boot/efi."
+    fi
+
+    say_ok "Analisi diagnostica completata senza effettuare alcuna modifica."
+    echo -e "\n${BOLD}Prossimo passo:${NC} Esegui ${CYAN}sudo ps5-m2-migrate init${NC} per inizializzare l'M.2."
+}
+
+# FASE 2: INIT (Scrittura GPT MBR PS5 LBA 65536)
+cmd_init() {
+    say_step "Fase 2: Inizializzazione Tabella Partizioni M.2 PS5"
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_abort "La fase di inizializzazione richiede privilegi di root (esegui con sudo)."
+    fi
+
+    if ! detect_target_device; then
+        say_abort "Impossibile procedere: nessun dispositivo SSD M.2 NVMe target identificato."
+    fi
+    get_device_info "$TARGET_DEV"
+
+    # Controllo che il target non sia montato
+    local mounts
+    mounts=$(lsblk -no MOUNTPOINTS "$TARGET_DEV" 2>/dev/null | grep -v '^$' || true)
+    if [ -n "$mounts" ]; then
+        say_abort "Il dispositivo $TARGET_DEV ha partizioni attualmente montate ($mounts). Smontale prima di procedere."
+    fi
+
+    echo -e "Dispositivo di destinazione confermato:"
+    echo -e "  Device  : ${BOLD}${TARGET_DEV}${NC}"
+    echo -e "  Modello : ${BOLD}${DEV_MODEL}${NC}"
+    echo -e "  Capacità: ${BOLD}${DEV_SIZE}${NC}"
+
+    prompt_confirm "ATTENZIONE: Verrà scritta la tabella MBR/GPT compatibile PS5 su $TARGET_DEV (LBA 65536).\nI dati precedenti sulla tabella partizioni di questo disco verranno sovrascritti."
+
+    ensure_m2_init_bin
+    say_info "Esecuzione $M2_INIT_BIN $TARGET_DEV..."
+    "$M2_INIT_BIN" "$TARGET_DEV"
+
+    # Tentativo di ricarica partition table via partprobe/blockdev
+    if command -v partprobe >/dev/null 2>&1; then
+        partprobe "$TARGET_DEV" 2>/dev/null || true
+    fi
+    if command -v blockdev >/dev/null 2>&1; then
+        blockdev --rereadpt "$TARGET_DEV" 2>/dev/null || true
+    fi
+
+    set_state "INIT_DONE"
+
+    say_ok "Inizializzazione M.2 completata con successo."
+    echo -e "\n${YELLOW}${BOLD}AZIONE RICHIESTA (Riavvio Obbligatorio):${NC}"
+    echo -e "1. Il kernel Linux ha bisogno di riavviare per registrare la partizione ${BOLD}${TARGET_DEV}p1${NC}."
+    echo -e "2. Riavvia la console PS5 (mantenendo la chiavetta USB inserita)."
+    echo -e "3. All'avvio in CachyOS da USB, esegui il passaggio successivo:"
+    echo -e "   ${CYAN}sudo ps5-m2-migrate install${NC}\n"
+}
+
+_verify_cloned_rootfs() {
+    local target="$1"
+    say_info "Verifica integrità del rootfs clonato su $target..."
+
+    if [ ! -d "$target/usr/bin" ] && [ ! -d "$target/bin" ]; then
+        say_abort "Verifica fallita: directory di sistema essenziale (/usr/bin) assente su $target!"
+    fi
+
+    if [ ! -d "$target/etc" ]; then
+        say_abort "Verifica fallita: directory di configurazione (/etc) assente su $target!"
+    fi
+
+    if [ ! -d "$target/boot" ]; then
+        say_abort "Verifica fallita: directory di avvio (/boot) assente su $target!"
+    fi
+
+    local k_found=0
+    for k in "$target"/boot/vmlinuz* "$target"/boot/bzImage*; do
+        if [ -f "$k" ]; then k_found=1; break; fi
+    done
+    if [ "$k_found" -eq 0 ]; then
+        say_warn "Nessun kernel trovato in $target/boot (verrà cercato in /boot/efi)."
+    else
+        say_info "Kernel verificato in $target/boot."
+    fi
+
+    local used_kb=0
+    used_kb=$(df -k "$target" 2>/dev/null | awk 'NR==2 {print $3}') || used_kb=0
+    if [ -n "$used_kb" ] && [ "$used_kb" -gt 0 ]; then
+        local used_mb=$(( used_kb / 1024 ))
+        say_info "Spazio rootfs clonato su M.2: ${used_mb} MB"
+        if [ "$used_mb" -lt 50 ] && [ "${PS5_M2_ALLOW_MOCK:-0}" != "1" ]; then
+            say_abort "Verifica fallita: la dimensione del rootfs (${used_mb} MB) è insufficiente!"
+        fi
+    fi
+
+    say_ok "Rootfs clonato verificato con successo."
+    return 0
+}
+
+# FASE 3: INSTALL (Formattazione ext4 + Clonazione Rootfs)
+cmd_install() {
+    say_step "Fase 3: Formattazione e Clonazione CachyOS su M.2"
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_abort "La fase di installazione richiede privilegi di root (esegui con sudo)."
+    fi
+
+    if ! detect_target_device; then
+        say_abort "Nessun dispositivo SSD M.2 target rilevato."
+    fi
+
+    local target_part="${TARGET_DEV}p1"
+    # Gestione dischi mock o device senza convenzione 'p'
+    if [ ! -b "$target_part" ] && [ -b "${TARGET_DEV}1" ]; then
+        target_part="${TARGET_DEV}1"
+    fi
+
+    if [ ! -b "$target_part" ] && [ "${PS5_M2_ALLOW_MOCK:-0}" != "1" ]; then
+        say_error "La partizione $target_part non e' visibile al kernel!"
+        say_info "Se non hai ancora riavviato la PS5 dopo la fase 'init', riavvia adesso per consentire al kernel di registrarla."
+        say_abort "Partizione $target_part non disponibile."
+    fi
+
+    prompt_confirm "ATTENZIONE: La partizione $target_part verrà FORMATTATA in ext4 con etichetta 'cachyos-m2' e ospiterà l'intero sistema operativo CachyOS."
+
+    # 1. Smontaggio preventivo
+    umount -l "$MNT_TARGET" 2>/dev/null || true
+    umount -l "$target_part" 2>/dev/null || true
+
+    # 2. Formattazione
+    say_info "Formattazione di $target_part (ext4, LABEL=cachyos-m2)..."
+    mkfs.ext4 -F -L "cachyos-m2" "$target_part"
+
+    # 3. Montaggio per sincronizzazione
+    mkdir -p "$MNT_TARGET"
+    mount "$target_part" "$MNT_TARGET"
+
+    # Assicura lo smontaggio pulito in caso di errore inatteso
+    trap 'umount -R "${MNT_TARGET:-}" 2>/dev/null || true; [ -d "${MNT_TARGET:-}" ] && rmdir "${MNT_TARGET:-}" 2>/dev/null || true' EXIT
+
+    # 4. Copia / Clonazione dei dati
+    if [ -n "${PS5_M2_IMAGE_SRC:-}" ] && [ -f "$PS5_M2_IMAGE_SRC" ]; then
+        say_info "Installazione da file immagine: $PS5_M2_IMAGE_SRC..."
+        local loop_dev
+        loop_dev=$(losetup -Pf --show "$PS5_M2_IMAGE_SRC")
+        local img_mnt="/mnt/ps5_img_src"
+        mkdir -p "$img_mnt"
+        mount "${loop_dev}p1" "$img_mnt"
+        say_info "Copia file dall'immagine montata a $MNT_TARGET..."
+        cp -a "$img_mnt/." "$MNT_TARGET/"
+        umount "$img_mnt"
+        rmdir "$img_mnt" 2>/dev/null || true
+        losetup -d "$loop_dev" 2>/dev/null || true
+    elif command -v rsync >/dev/null 2>&1; then
+        say_info "Esecuzione clonazione live del rootfs con rsync..."
+        say_info "(Esclusione filesystem virtuali /proc, /sys, /dev, /run, /tmp, /mnt, /boot/efi)"
+
+        local src_root="${PS5_M2_SRC_ROOT:-/}"
+        rsync -aHAXx --numeric-ids \
+            --exclude={"/proc/*","/sys/*","/dev/*","/run/*","/tmp/*","/mnt/*","/media/*","/lost+found","/boot/efi/*","/home/*/.cache/*","/var/tmp/*","/var/cache/pacman/pkg/*"} \
+            "$src_root/" "$MNT_TARGET/"
+    elif command -v tar >/dev/null 2>&1; then
+        say_info "rsync non presente: uso del motore nativo GNU tar (--one-file-system)..."
+        say_info "(Clonazione ad alta fedeltà con esclusione automatica mountpoint e file volatili)"
+
+        local src_root="${PS5_M2_SRC_ROOT:-/}"
+        set +e
+        tar --one-file-system \
+            --ignore-failed-read \
+            --exclude="./proc/*" \
+            --exclude="./sys/*" \
+            --exclude="./dev/*" \
+            --exclude="./run/*" \
+            --exclude="./tmp/*" \
+            --exclude="./mnt/*" \
+            --exclude="./media/*" \
+            --exclude="./lost+found" \
+            --exclude="./boot/efi/*" \
+            --exclude="./var/tmp/*" \
+            --exclude="./var/cache/pacman/pkg/*" \
+            --exclude="./home/*/.cache/*" \
+            -C "$src_root" -cpf - . 2>>"$LOG_FILE" | tar -C "$MNT_TARGET" -xpf - 2>>"$LOG_FILE"
+        local tar_rc=${PIPESTATUS[1]}
+        set -e
+
+        if [ "$tar_rc" -ne 0 ]; then
+            say_abort "Errore critico durante l'estrazione dei file con tar su M.2 (exit code: $tar_rc)!"
+        fi
+    else
+        say_info "rsync e tar non presenti: uso del motore nativo coreutils (cp -a)..."
+        say_info "(Clonazione directory di sistema con isolamento errori ed esclusione mountpoint virtuali)"
+
+        local src_root="${PS5_M2_SRC_ROOT:-/}"
+        set +e
+        for item in "$src_root"/*; do
+            [ -e "$item" ] || [ -L "$item" ] || continue
+            local base
+            base=$(basename "$item")
+            case "$base" in
+                proc|sys|dev|run|tmp|mnt|media|lost+found)
+                    continue
+                    ;;
+                boot)
+                    # Gestione /boot: copia i kernel/initrd ed esclude il mountpoint /boot/efi (FAT32 USB)
+                    mkdir -p "$MNT_TARGET/boot"
+                    for b_item in "$item"/*; do
+                        [ -e "$b_item" ] || [ -L "$b_item" ] || continue
+                        [ "$(basename "$b_item")" = "efi" ] && continue
+                        cp -a "$b_item" "$MNT_TARGET/boot/" 2>>"$LOG_FILE" || true
+                    done
+                    ;;
+                var)
+                    mkdir -p "$MNT_TARGET/var"
+                    for v_item in "$item"/*; do
+                        [ -e "$v_item" ] || [ -L "$v_item" ] || continue
+                        local v_base
+                        v_base=$(basename "$v_item")
+                        case "$v_base" in
+                            tmp|run|lock)
+                                continue
+                                ;;
+                            *)
+                                cp -a "$v_item" "$MNT_TARGET/var/" 2>>"$LOG_FILE" || true
+                                ;;
+                        esac
+                    done
+                    ;;
+                *)
+                    cp -a "$item" "$MNT_TARGET/" 2>>"$LOG_FILE" || true
+                    ;;
+            esac
+        done
+        for dot_item in "$src_root"/.[!.]* "$src_root"/..?*; do
+            [ -e "$dot_item" ] || [ -L "$dot_item" ] || continue
+            cp -a "$dot_item" "$MNT_TARGET/" 2>>"$LOG_FILE" || true
+        done
+        set -e
+    fi
+
+    # Ricrea cartelle di mountpoint essenziali
+    for dir in proc sys dev run tmp mnt media boot/efi; do
+        mkdir -p "$MNT_TARGET/$dir"
+        chmod 0755 "$MNT_TARGET/$dir" 2>/dev/null || true
+    done
+    chmod 1777 "$MNT_TARGET/tmp" 2>/dev/null || true
+
+    # Verifica di integrità del rootfs clonato prima di procedere
+    _verify_cloned_rootfs "$MNT_TARGET"
+
+    # 5. Generazione /etc/fstab coerente su M.2
+    say_info "Configurazione /etc/fstab con LABEL=cachyos-m2 e LABEL=boot..."
+    cat << 'EOF' > "$MNT_TARGET/etc/fstab"
+# /etc/fstab: static file system information (migrated to PS5 internal M.2 SSD)
+#
+# <file system>    <mount point>   <type>  <options>                             <dump>  <pass>
+LABEL=cachyos-m2   /               ext4    defaults,noatime,commit=60            0       1
+LABEL=boot         /boot/efi       vfat    defaults,flush,errors=remount-ro      0       1
+EOF
+
+    # Flush delle scritture e verifica integrità
+    say_info "Sincronizzazione disco in corso (sync)..."
+    sync
+    umount "$MNT_TARGET"
+    rmdir "$MNT_TARGET" 2>/dev/null || true
+    trap - EXIT
+
+    say_info "Verifica integrità filesystem su $target_part..."
+    e2fsck -fy "$target_part" 2>/dev/null || true
+
+    set_state "INSTALL_DONE"
+    say_ok "Copia e configurazione su SSD M.2 completata con successo!"
+    echo -e "\n${BOLD}Prossimo passo consigliato:${NC}"
+    echo -e "Testa l'avvio dall'M.2 via kexec con: ${CYAN}sudo ps5-m2-migrate test-boot${NC}"
+    echo -e "Oppure applica la modifica permanente a cmdline.txt con: ${CYAN}sudo ps5-m2-migrate finalize${NC}\n"
+}
+
+# FASE 4: TEST-BOOT (Avvio di prova via Kexec)
+cmd_test_boot() {
+    say_step "Fase 4: Test di Avvio non-distruttivo via Kexec"
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_abort "Il test kexec richiede privilegi di root (esegui con sudo)."
+    fi
+
+    if ! command -v kexec >/dev/null 2>&1; then
+        say_warn "Comando 'kexec' non disponibile in questo ambiente."
+        say_info "Puoi procedere direttamente con la finalizzazione permanente eseguendo:"
+        echo -e "  ${CYAN}sudo ps5-m2-migrate finalize${NC}\n"
+        return 0
+    fi
+
+    local target_part
+    target_part=$(blkid -L "cachyos-m2" 2>/dev/null || true)
+    if [ -z "$target_part" ]; then
+        say_abort "Partizione con etichetta 'cachyos-m2' non trovata. Esegui prima 'sudo ps5-m2-migrate install'."
+    fi
+
+    mkdir -p "$KEXEC_MNT"
+    mount -o ro "$target_part" "$KEXEC_MNT"
+    trap 'umount "${KEXEC_MNT:-}" 2>/dev/null || true; [ -d "${KEXEC_MNT:-}" ] && rmdir "${KEXEC_MNT:-}" 2>/dev/null || true' EXIT
+
+    local vmlinuz="" initrd=""
+    for k in "$KEXEC_MNT"/boot/vmlinuz-linux-ps5 "$KEXEC_MNT"/boot/vmlinuz* /boot/efi/vmlinuz*; do
+        if [ -f "$k" ]; then vmlinuz="$k"; break; fi
+    done
+    for i in "$KEXEC_MNT"/boot/initramfs-linux-ps5.img "$KEXEC_MNT"/boot/initramfs* "$KEXEC_MNT"/boot/initrd* /boot/efi/initramfs*; do
+        if [ -f "$i" ]; then initrd="$i"; break; fi
+    done
+
+    if [ -z "$vmlinuz" ] || [ -z "$initrd" ]; then
+        say_abort "Kernel o initramfs non reperibili per il kexec."
+    fi
+
+    say_info "Kernel individuato : $vmlinuz"
+    say_info "Initrd individuato : $initrd"
+
+    # Prepara riga di comando per puntare al nuovo rootfs M.2
+    local cmdline=""
+    if [ -f "/proc/cmdline" ]; then
+        cmdline=$(cat /proc/cmdline | sed -e "s|root=[^ ]*|root=LABEL=cachyos-m2|g" | xargs)
+    else
+        cmdline="root=LABEL=cachyos-m2 rw console=tty0 video=DP-1:1920x1080@60 mitigations=off"
+    fi
+    say_info "Cmdline kexec      : $cmdline"
+
+    kexec -l "$vmlinuz" --initrd="$initrd" --append="$cmdline"
+    say_ok "Immagine kexec caricata in memoria."
+
+    umount "$KEXEC_MNT"
+    rmdir "$KEXEC_MNT" 2>/dev/null || true
+    trap - EXIT
+
+    say_warn "Il sistema sta per eseguire kexec e avviare il kernel direttamente dall'M.2!"
+    prompt_confirm "Confermi l'esecuzione del test kexec immediato?"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl kexec -i
+    else
+        kexec -e
+    fi
+}
+
+# FASE 5: FINALIZE (Aggiornamento Permanente di cmdline.txt su USB Boot)
+cmd_finalize() {
+    say_step "Fase 5: Finalizzazione e Aggiornamento Permanente cmdline.txt"
+
+    if [ "$EUID" -ne 0 ] && [ "${PS5_M2_ALLOW_NONROOT:-0}" != "1" ]; then
+        say_abort "La finalizzazione richiede privilegi di root (esegui con sudo)."
+    fi
+
+    local cmdline_file="/boot/efi/cmdline.txt"
+    if [ ! -f "$cmdline_file" ]; then
+        say_abort "File $cmdline_file non trovato. Assicurati che la partizione EFI sia montata."
+    fi
+
+    # Backup del cmdline.txt originale della USB
+    local backup_file="/boot/efi/cmdline.txt.usb-backup"
+    if [ ! -f "$backup_file" ]; then
+        cp "$cmdline_file" "$backup_file"
+        say_ok "Backup di sicurezza creato: $backup_file"
+    else
+        say_info "Backup di sicurezza preesistente conservato: $backup_file"
+    fi
+
+    local current_cmd
+    current_cmd=$(cat "$cmdline_file" | tr -d '\r\n')
+    say_info "cmdline attuale : $current_cmd"
+
+    local new_cmd
+    new_cmd=$(echo "$current_cmd" | sed -E 's|root=[^[:space:]]+|root=LABEL=cachyos-m2|g')
+    echo "$new_cmd" > "$cmdline_file"
+    sync
+
+    set_state "FINALIZED"
+
+    say_ok "cmdline.txt aggiornato con successo:"
+    echo -e "  ${GREEN}${new_cmd}${NC}\n"
+    say_ok "MIGRAZIONE SU SSD M.2 COMPLETATA CON SUCCESSO!"
+    echo -e "La console PS5 si avvierà ora ad altissima velocità NVMe dall'SSD interno."
+    echo -e "${CYAN}Nota di sicurezza:${NC} La chiavetta USB continua ad essere utilizzata per il bootloader EFI."
+    echo -e "Se vorrai ripristinare il boot dalla chiavetta USB, esegui: ${CYAN}sudo ps5-m2-migrate rollback${NC}\n"
+}
+
+# ROLLBACK
+cmd_rollback() {
+    say_step "Rollback: Ripristino Avvio da Chiavetta USB"
+    local cmdline_file="/boot/efi/cmdline.txt"
+    local backup_file="/boot/efi/cmdline.txt.usb-backup"
+
+    if [ -f "$backup_file" ]; then
+        cp "$backup_file" "$cmdline_file"
+        say_ok "Ripristinato cmdline.txt dal backup originale."
+    elif [ -f "$cmdline_file" ]; then
+        sed -i -E 's|root=[^[:space:]]+|root=LABEL=cachyos|g' "$cmdline_file"
+        say_ok "Impostato root=LABEL=cachyos in cmdline.txt."
+    else
+        say_abort "File $cmdline_file non reperibile."
+    fi
+    sync
+    set_state "ROLLED_BACK"
+    say_ok "Rollback completato. La console PS5 si avvierà nuovamente dalla chiavetta USB."
+}
+
+cmd_status() {
+    say_step "Stato Migrazione M.2 PS5"
+    local st
+    st=$(get_state)
+    echo -e "  Stato corrente: ${BOLD}${st}${NC}"
+    case "$st" in
+        NOT_STARTED)   echo -e "  Azione consigliata: ${CYAN}sudo ps5-m2-migrate analyze${NC}" ;;
+        INIT_DONE)     echo -e "  Azione consigliata: Se hai riavviato la PS5, esegui ${CYAN}sudo ps5-m2-migrate install${NC}" ;;
+        INSTALL_DONE)  echo -e "  Azione consigliata: Esegui ${CYAN}sudo ps5-m2-migrate test-boot${NC} o ${CYAN}finalize${NC}" ;;
+        FINALIZED)     echo -e "  ${GREEN}Migrazione attiva su SSD M.2 interno.${NC}" ;;
+        ROLLED_BACK)   echo -e "  Avvio configurato su chiavetta USB." ;;
+        *)             echo -e "  Stato non riconosciuto ($st)." ;;
+    esac
+}
+
+show_help() {
+    cat << EOF
+Uso: sudo ps5-m2-migrate <COMANDO> [OPZIONI]
+
+Strumento di migrazione e gestione CachyOS per SSD M.2 interno su PlayStation 5.
+Firmware supportato: 13.60+ | Partition offset LBA 65536 | Zero rischio dati USB.
+
+Comandi disponibili:
+  analyze, --analyze      (Fase 1) Esegue analisi hardware e controlli diagnostici non-distruttivi
+  init, --init            (Fase 2) Inizializza la GPT secondaria PS5 a LBA 65536 (richiede riavvio)
+  install, --install      (Fase 3) Formatta ext4 (cachyos-m2) e clona il rootfs CachyOS su M.2
+  test-boot, --test-boot  (Fase 4) Avvia Linux dall'M.2 in sola lettura tramite kexec senza toccare la USB
+  finalize, --finalize    (Fase 5) Aggiorna permanentemente /boot/efi/cmdline.txt per l'avvio da M.2
+  rollback, --rollback    Ripristina il file cmdline.txt per avviare nuovamente da USB
+  status, --status        Mostra lo stato attuale della procedura di migrazione
+  help, --help, -h        Mostra questa guida
+
+Opzioni avanzate:
+  --image <file.img>      Usa un file immagine disco invece della clonazione live del sistema attivo
+
+Esempi:
+  sudo ps5-m2-migrate analyze
+  sudo ps5-m2-migrate init
+  # ... riavvia la console ...
+  sudo ps5-m2-migrate install
+  sudo ps5-m2-migrate test-boot
+  sudo ps5-m2-migrate finalize
+EOF
+}
+
+# ==============================================================================
+# MAIN ROUTING
+# ==============================================================================
+ACTION="${1:-status}"
+shift || true
+
+# Parse flags opzionali (es. --image)
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --image)
+            PS5_M2_IMAGE_SRC="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+case "$ACTION" in
+    analyze|--analyze|--dry-run)
+        cmd_analyze
+        ;;
+    init|--init)
+        cmd_init
+        ;;
+    install|--install)
+        cmd_install
+        ;;
+    test-boot|--test-boot|kexec)
+        cmd_test_boot
+        ;;
+    finalize|--finalize)
+        cmd_finalize
+        ;;
+    rollback|--rollback)
+        cmd_rollback
+        ;;
+    status|--status)
+        cmd_status
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        echo -e "${RED}Comando sconosciuto: $ACTION${NC}"
+        show_help
+        exit 1
+        ;;
+esac

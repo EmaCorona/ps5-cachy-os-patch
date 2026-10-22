@@ -18,7 +18,7 @@ module_cleanup_run() {
         return 1
     fi
 
-    # 1. Rimozione lock e PID files di Steam orfani (causa di mancate partenze dopo arresti anomali)
+    # 1. Rimozione lock, PID e file temporanei di Steam orfani (causa di mancate partenze dopo arresti anomali)
     for stale in \
         "${cachy_mnt}/home/steam/.steam/steam.pid" \
         "${cachy_mnt}/home/steam/.steam/steam.pipe" \
@@ -32,6 +32,8 @@ module_cleanup_run() {
             log_info "Rimosso file orfano: $(basename "$stale")"
         fi
     done
+    sudo rm -f "${cachy_mnt}"/home/steam/.steam/steam/config/registry.vdf.*.tmp 2>/dev/null || true
+    sudo rm -f "${cachy_mnt}"/home/steam/.local/share/Steam/config/registry.vdf.*.tmp 2>/dev/null || true
 
     # 1b. Rimozione file autostart XDG e script orfani/dannosi derivati da vecchi branch o test
     for stale_autostart in \
@@ -103,6 +105,66 @@ EOF
         fi
     fi
 
+    # 1f. Sanitizzazione e rinforzo del drop-in autologin tty1 (rimozione flag non standard come --clear)
+    local autologin_dir="${cachy_mnt}/etc/systemd/system/getty@tty1.service.d"
+    local autologin_conf="${autologin_dir}/autologin.conf"
+    sudo mkdir -p "$autologin_dir"
+    cat << 'EOF' | sudo tee "$autologin_conf" >/dev/null
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -o "-p -f -- \\u" --autologin steam %I $TERM
+EOF
+    sudo chmod 0644 "$autologin_conf"
+    log_info "Sanitizzato autologin.conf (tty1 autologin steam standard)"
+
+    # 1g. Rimozione e distacco loop device orfani e mountpoint temporanei stale da test precedenti
+    for stale_mnt in \
+        "${cachy_mnt}/mnt/cachyos_m2" \
+        "${cachy_mnt}/mnt/ps5_cachyos_src" \
+        "${cachy_mnt}/mnt/ps5_image_src" \
+        "${cachy_mnt}/mnt_m2_check" \
+        "${cachy_mnt}/tmp/kexec_mnt"
+    do
+        if [ -d "$stale_mnt" ]; then
+            sudo umount -l "$stale_mnt" 2>/dev/null || true
+            sudo rmdir "$stale_mnt" 2>/dev/null || true
+            log_info "Ripulito mountpoint temporaneo stale: $(basename "$stale_mnt")"
+        fi
+    done
+    for lp in $(losetup -a 2>/dev/null | grep -E "ps5-cachyos|m2-migration" | cut -d: -f1); do
+        sudo losetup -d "$lp" 2>/dev/null || true
+        log_info "Distaccato loop device orfano: $lp"
+    done
+
+    # 1h. Bonifica e disabilitazione definitiva del wizard first-boot dialog su tty1
+    sudo touch "${cachy_mnt}/etc/ps5-firstboot-done" 2>/dev/null || true
+    sudo touch "${cachy_mnt}/etc/ps5-first-boot-done" 2>/dev/null || true
+    sudo touch "${cachy_mnt}/var/lib/cachyos-firstboot-done" 2>/dev/null || true
+    if [ -f "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/first-boot.service" ] || \
+       [ -L "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/first-boot.service" ]; then
+        sudo rm -f "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/first-boot.service"
+        log_info "Disabilitato first-boot.service da multi-user.target.wants"
+    fi
+    sudo ln -sf /dev/null "${cachy_mnt}/etc/systemd/system/first-boot.service" 2>/dev/null || true
+    if [ -f "${cachy_mnt}/usr/local/sbin/first-boot-setup" ]; then
+        cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/first-boot-setup" >/dev/null
+#!/bin/bash
+# First-boot setup disabilitato automaticamente da ps5-cachy-os-patch
+touch /etc/ps5-first-boot-done /etc/ps5-firstboot-done 2>/dev/null || true
+exit 0
+EOF
+        sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/first-boot-setup" 2>/dev/null || true
+    fi
+
+    # 1i. Sanitizzazione parametri cmdline.txt: disabilitazione APST NVMe
+    if [ -n "$boot_mnt" ] && [ -f "$boot_mnt/cmdline.txt" ]; then
+        if ! grep -q "nvme_core.default_ps_max_latency_us=0" "$boot_mnt/cmdline.txt"; then
+            sed -i -E 's/$/ nvme_core.default_ps_max_latency_us=0/' "$boot_mnt/cmdline.txt"
+            sed -i -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//' "$boot_mnt/cmdline.txt"
+            log_info "Aggiunto nvme_core.default_ps_max_latency_us=0 in cmdline.txt durante cleanup"
+        fi
+    fi
+
     # 2. Imposta lo stato sessione predefinito su KDE Plasma Desktop
     sudo mkdir -p "${cachy_mnt}/home/steam/.config"
     sudo rm -f "${cachy_mnt}/home/steam/.config/ps5-steam-firstboot-alert.txt" 2>/dev/null || true
@@ -110,18 +172,38 @@ EOF
     sudo chown -R 1000:1000 "${cachy_mnt}/home/steam/.config" 2>/dev/null || true
     sudo chmod 0644 "${cachy_mnt}/home/steam/.config/ps5-next-session" 2>/dev/null || true
 
-    # 2b. Rimozione configurazione kwinoutputconfig.json 4K stale per consentire aggancio 1080p60 pulito
+    # 2b. Rimozione configurazione kwinoutputconfig.json e profili kscreen 4K stale per consentire aggancio 1080p60 pulito
     if [ -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" ]; then
         sudo rm -f "${cachy_mnt}/home/steam/.config/kwinoutputconfig.json" 2>/dev/null || true
         log_info "Rimossa configurazione kwinoutputconfig.json 4K per ripristino modalità pulita 1080p60"
     fi
+    if [ -d "${cachy_mnt}/home/steam/.local/share/kscreen" ]; then
+        sudo rm -rf "${cachy_mnt}/home/steam/.local/share/kscreen"/* 2>/dev/null || true
+        log_info "Ripuliti profili display obsoleti in .local/share/kscreen"
+    fi
 
-    # 3. Pulizia coredump accumulati e file drkonqi (previene saturazione I/O flash)
+    # 3. Pulizia coredump accumulati, file drkonqi e journal frammentati (previene saturazione I/O flash)
     if [ -d "${cachy_mnt}/var/lib/systemd/coredump" ]; then
         sudo rm -f "${cachy_mnt}/var/lib/systemd/coredump"/* 2>/dev/null || true
     fi
     if [ -d "${cachy_mnt}/home/steam/.cache/drkonqi" ]; then
         sudo rm -rf "${cachy_mnt}/home/steam/.cache/drkonqi"/* 2>/dev/null || true
+    fi
+    sudo rm -f "${cachy_mnt}/var/log/journal"/*/*.journal~ 2>/dev/null || true
+
+    # 3b. Normalizzazione permessi log condivisi e rotazione preventiva file sovradimensionati
+    if [ -d "${cachy_mnt}/var/log/ps5" ]; then
+        sudo chmod 0777 "${cachy_mnt}/var/log/ps5" 2>/dev/null || true
+        sudo chmod 0666 "${cachy_mnt}/var/log/ps5"/*.log 2>/dev/null || true
+        for logf in "${cachy_mnt}/var/log/ps5"/*.log; do
+            [ -f "$logf" ] || continue
+            local fsize
+            fsize=$(stat -c%s "$logf" 2>/dev/null || echo 0)
+            if [ "$fsize" -gt 5242880 ]; then
+                sudo truncate -s 1M "$logf" 2>/dev/null || true
+                log_info "Troncato log sovradimensionato (>5MB): $(basename "$logf")"
+            fi
+        done
     fi
 
     # 4. Creazione script di auto-bonifica all'avvio della PS5
@@ -132,14 +214,47 @@ EOF
 # Executed automatically by systemd before user sessions start
 [ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
+# Termina preventivamente qualsiasi wizard interattivo o dialog bloccante su tty1
+killall -9 dialog first-boot-setup 2>/dev/null || true
+
+# Assicura marker di completamento first-boot e disattivazione first-boot.service
+touch /etc/ps5-first-boot-done /etc/ps5-firstboot-done /var/lib/cachyos-firstboot-done 2>/dev/null || true
+rm -f /etc/systemd/system/multi-user.target.wants/first-boot.service 2>/dev/null || true
+ln -sf /dev/null /etc/systemd/system/first-boot.service 2>/dev/null || true
+
+# Clear failed state on systemd units from dirty shutdowns or previous crashes
+systemctl reset-failed 2>/dev/null || true
+
 ps5_log boot info "===== NUOVO BOOT PS5 ===== kernel=$(uname -r 2>/dev/null) cmdline=\"$(cat /proc/cmdline 2>/dev/null)\""
 ps5_log boot info "vram.txt=$(cat /boot/efi/vram.txt 2>/dev/null || echo n/a) next-session=$(cat /home/steam/.config/ps5-next-session 2>/dev/null || echo n/a)"
 
-# Remove stale Steam pid/pipes, session switch markers, and old fallback alerts
-rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe 2>/dev/null || true
-rm -f /home/steam/.local/share/Steam/*.pid /home/steam/.local/share/Steam/*.pipe 2>/dev/null || true
+# Enforce shared log directory and file permissions so non-root processes never hit 'Permission denied'
+mkdir -p /var/log/ps5 2>/dev/null || true
+chmod 0777 /var/log/ps5 2>/dev/null || true
+chmod 0666 /var/log/ps5/*.log 2>/dev/null || true
+
+# Truncate logs larger than 5MB to prevent filling flash
+for logf in /var/log/ps5/*.log /home/steam/.*.log; do
+    [ -f "$logf" ] || continue
+    fsize=$(stat -c%s "$logf" 2>/dev/null || echo 0)
+    if [ "$fsize" -gt 5242880 ]; then
+        tail -n 1000 "$logf" > "${logf}.tmp" 2>/dev/null && mv -f "${logf}.tmp" "$logf" 2>/dev/null || true
+        chmod 0666 "$logf" 2>/dev/null || true
+    fi
+done
+
+# Remove stale Steam pid/pipes/tmp, session switch markers, and old fallback alerts
+rm -f /home/steam/.steam/*.pid /home/steam/.steam/*.pipe /home/steam/.steam/steam/config/registry.vdf.*.tmp 2>/dev/null || true
+rm -f /home/steam/.local/share/Steam/*.pid /home/steam/.local/share/Steam/*.pipe /home/steam/.local/share/Steam/config/registry.vdf.*.tmp 2>/dev/null || true
 rm -f /tmp/.X*-lock /tmp/.x11-unix/X* /tmp/ps5-user-session-switch /tmp/ps5-bridge-* /tmp/ps5-manual-desktop 2>/dev/null || true
 rm -f /home/steam/.config/ps5-steam-firstboot-alert.txt 2>/dev/null || true
+
+# Remove orphan loop devices and stale migration mountpoints
+for lp in $(losetup -a 2>/dev/null | grep -E "ps5-cachyos|m2-migration" | cut -d: -f1); do
+    losetup -d "$lp" 2>/dev/null || true
+done
+umount -l /mnt/cachyos_m2 /mnt/ps5_cachyos_src /mnt/ps5_image_src /mnt_m2_check /tmp/kexec_mnt 2>/dev/null || true
+rmdir /mnt/cachyos_m2 /mnt/ps5_cachyos_src /mnt/ps5_image_src /mnt_m2_check /tmp/kexec_mnt 2>/dev/null || true
 
 # Remove obsolete/harmful autostart entries and local binaries
 rm -f /etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop /etc/xdg/autostart/ps5-resolution.desktop 2>/dev/null || true
@@ -151,17 +266,23 @@ rm -f /home/steam/.config/gamescope/ps5-resolution.conf /home/steam/.ps5-display
 if [ -f /home/steam/.config/kwinoutputconfig.json ] && grep -q "3840" /home/steam/.config/kwinoutputconfig.json 2>/dev/null; then
     rm -f /home/steam/.config/kwinoutputconfig.json 2>/dev/null || true
 fi
+if [ -d /home/steam/.local/share/kscreen ]; then
+    grep -rl "3840" /home/steam/.local/share/kscreen 2>/dev/null | xargs rm -f 2>/dev/null || true
+fi
 
-# Purge any dangling coredump files
+# Purge dangling coredump files and corrupted journal remnants
 rm -f /var/lib/systemd/coredump/* 2>/dev/null || true
 rm -rf /home/steam/.cache/drkonqi/crashes/* 2>/dev/null || true
+rm -f /var/log/journal/*/*.journal~ 2>/dev/null || true
 
-# Ensure default boot into KDE Plasma Desktop (user can switch to Gamescope from desktop)
+# Ensure default boot into KDE Plasma Desktop (unless voluntary switch is pending)
 mkdir -p /home/steam/.config
-echo "desktop" > /home/steam/.config/ps5-next-session
+if [ ! -f /tmp/ps5-user-session-switch ] || [ ! -s /home/steam/.config/ps5-next-session ]; then
+    echo "desktop" > /home/steam/.config/ps5-next-session
+fi
 chown -R 1000:1000 /home/steam/.config 2>/dev/null || true
 
-ps5_log cleanup info "bonifica lock orfani e coredump completata; next-session impostata su desktop"
+ps5_log cleanup info "bonifica lock orfani, reset-failed e coredump completata; next-session verificata"
 exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-boot-cleanup"
@@ -196,11 +317,23 @@ module_cleanup_check() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
+    local ok=1
     if [ -x "${cachy_mnt}/usr/local/sbin/ps5-boot-cleanup" ] && \
        [ -f "${cachy_mnt}/etc/systemd/system/ps5-boot-cleanup.service" ]; then
         log_success "Servizio ps5-boot-cleanup presente ed abilitato."
-        return 0
+    else
+        log_warn "Servizio ps5-boot-cleanup non ancora installato."
+        ok=0
     fi
-    log_warn "Servizio ps5-boot-cleanup non ancora installato."
+
+    local autologin_conf="${cachy_mnt}/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+    if [ -f "$autologin_conf" ] && ! grep -q -- "--clear" "$autologin_conf"; then
+        log_success "Drop-in autologin.conf verificato e privo di flag incompatibili."
+    else
+        log_warn "Drop-in autologin.conf assente o non valido."
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && return 0
     return 1
 }

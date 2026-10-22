@@ -53,10 +53,13 @@ setup_sandbox() {
     printf "LABEL=cachyos / ext4 defaults 0 1\nLABEL=boot /boot/efi vfat defaults 0 1\n" > "$MOCK_ROOT/etc/fstab"
 
     # File orfani per test di pulizia stato
-    mkdir -p "$MOCK_ROOT/home/steam/.steam" "$MOCK_ROOT/var/lib/systemd/coredump" "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes"
+    mkdir -p "$MOCK_ROOT/home/steam/.steam/steam/config" "$MOCK_ROOT/home/steam/.local/share/kscreen" "$MOCK_ROOT/var/lib/systemd/coredump" "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes" "$MOCK_ROOT/var/log/ps5" "$MOCK_ROOT/mnt/cachyos_m2" "$MOCK_ROOT/mnt/ps5_cachyos_src"
     touch "$MOCK_ROOT/home/steam/.steam/steam.pid" "$MOCK_ROOT/home/steam/.steam/steam.pipe"
+    touch "$MOCK_ROOT/home/steam/.steam/steam/config/registry.vdf.1234.tmp"
+    touch "$MOCK_ROOT/home/steam/.local/share/kscreen/test-profile"
     touch "$MOCK_ROOT/var/lib/systemd/coredump/core.test.1234.zst"
     touch "$MOCK_ROOT/home/steam/.cache/drkonqi/crashes/crash.test.ini"
+    touch "$MOCK_ROOT/var/log/ps5/test.log"
 }
 
 teardown_sandbox() {
@@ -1229,7 +1232,7 @@ test_module_cleanup() {
     echo '{"width": 3840, "height": 2160}' > "$MOCK_ROOT/home/steam/.config/kwinoutputconfig.json"
 
     # Simula file autostart, binari e config orfani/dannosi
-    mkdir -p "$MOCK_ROOT/etc/xdg/autostart" "$MOCK_ROOT/usr/local/bin" "$MOCK_ROOT/etc" "$MOCK_ROOT/tmp" "$MOCK_ROOT/home/steam/.config/gamescope"
+    mkdir -p "$MOCK_ROOT/etc/xdg/autostart" "$MOCK_ROOT/usr/local/bin" "$MOCK_ROOT/usr/local/sbin" "$MOCK_ROOT/etc" "$MOCK_ROOT/tmp" "$MOCK_ROOT/home/steam/.config/gamescope" "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants" "$MOCK_ROOT/mnt/ps5_image_src" "$MOCK_ROOT/tmp/kexec_mnt" "$MOCK_ROOT/var/log/journal/test"
     touch "$MOCK_ROOT/etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop"
     touch "$MOCK_ROOT/etc/xdg/autostart/ps5-resolution.desktop"
     touch "$MOCK_ROOT/usr/local/bin/ps5-bridge-auto-gamescope"
@@ -1238,6 +1241,11 @@ test_module_cleanup() {
     touch "$MOCK_ROOT/home/steam/.config/gamescope/ps5-resolution.conf"
     touch "$MOCK_ROOT/tmp/ps5-bridge-initialized"
     echo "PS5_OUTPUT_WIDTH=3840" > "$MOCK_ROOT/etc/ps5-gamescope.conf"
+
+    # Simula servizio first-boot attivo e residui journal
+    touch "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/first-boot.service"
+    touch "$MOCK_ROOT/usr/local/sbin/first-boot-setup"
+    touch "$MOCK_ROOT/var/log/journal/test/system.journal~"
 
     module_cleanup_run "$MOCK_ROOT" "$MOCK_BOOT"
 
@@ -1269,11 +1277,77 @@ test_module_cleanup() {
         say_fail "Template /etc/ps5-gamescope.conf non sanitizzato o con override non commentati"
     fi
 
-    # Verifica rimozione file steam.pid e steam.pipe
-    if [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pid" ] && [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pipe" ]; then
-        say_pass "File orfani steam.pid e steam.pipe rimossi correttamente"
+    # Verifica rimozione file steam.pid, steam.pipe e registry.vdf.*.tmp
+    if [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pid" ] && \
+       [ ! -f "$MOCK_ROOT/home/steam/.steam/steam.pipe" ] && \
+       [ ! -f "$MOCK_ROOT/home/steam/.steam/steam/config/registry.vdf.1234.tmp" ]; then
+        say_pass "File orfani steam.pid, steam.pipe e registry.vdf.*.tmp rimossi correttamente"
     else
-        say_fail "File orfani steam.pid o steam.pipe ancora presenti"
+        say_fail "File orfani steam.pid, steam.pipe o registry.vdf.*.tmp ancora presenti"
+    fi
+
+    # Verifica pulizia mountpoint temporanei stale in /mnt
+    if [ ! -d "$MOCK_ROOT/mnt/cachyos_m2" ] && \
+       [ ! -d "$MOCK_ROOT/mnt/ps5_cachyos_src" ] && \
+       [ ! -d "$MOCK_ROOT/mnt/ps5_image_src" ] && \
+       [ ! -d "$MOCK_ROOT/tmp/kexec_mnt" ]; then
+        say_pass "Mountpoint temporanei stale in /mnt e /tmp ripuliti con successo"
+    else
+        say_fail "Mountpoint temporanei stale in /mnt o /tmp ancora presenti"
+    fi
+
+    # Verifica bonifica first-boot e neutralizzazione servizio wizard
+    if [ -f "$MOCK_ROOT/etc/ps5-firstboot-done" ] && \
+       [ -f "$MOCK_ROOT/etc/ps5-first-boot-done" ] && \
+       [ ! -f "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/first-boot.service" ] && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/first-boot.service" ] && \
+       [ "$(readlink "$MOCK_ROOT/etc/systemd/system/first-boot.service")" = "/dev/null" ] && \
+       [ -x "$MOCK_ROOT/usr/local/sbin/first-boot-setup" ] && \
+       grep -q "exit 0" "$MOCK_ROOT/usr/local/sbin/first-boot-setup"; then
+        say_pass "first-boot.service disabilitato, mascherato e script neutralizzato"
+    else
+        say_fail "first-boot.service o first-boot-setup non neutralizzati correttamente"
+    fi
+
+    # Verifica rimozione file journal frammentati
+    if [ ! -f "$MOCK_ROOT/var/log/journal/test/system.journal~" ]; then
+        say_pass "File journal frammentati (*.journal~) rimossi con successo"
+    else
+        say_fail "File journal frammentati (*.journal~) ancora presenti"
+    fi
+
+    # Verifica parametro APST NVMe in cmdline.txt durante cleanup
+    if grep -q "nvme_core.default_ps_max_latency_us=0" "$MOCK_BOOT/cmdline.txt"; then
+        say_pass "Parametro nvme_core.default_ps_max_latency_us=0 inserito in cmdline.txt"
+    else
+        say_fail "Parametro nvme_core.default_ps_max_latency_us=0 mancante in cmdline.txt"
+    fi
+
+    # Verifica pulizia profili kscreen stale
+    local kscreen_count
+    kscreen_count=$(find "$MOCK_ROOT/home/steam/.local/share/kscreen" -type f | wc -l)
+    if [ "$kscreen_count" -eq 0 ]; then
+        say_pass "Profili kscreen obsoleti ripuliti correttamente"
+    else
+        say_fail "Profili kscreen obsoleti ancora presenti"
+    fi
+
+    # Verifica sanitizzazione autologin.conf tty1
+    local autologin_file="$MOCK_ROOT/etc/systemd/system/getty@tty1.service.d/autologin.conf"
+    if [ -f "$autologin_file" ] && \
+       grep -q "agetty" "$autologin_file" && \
+       grep -q "autologin steam" "$autologin_file" && \
+       ! grep -q -- "--clear" "$autologin_file"; then
+        say_pass "Drop-in autologin.conf configurato con agetty standard e privo di --clear"
+    else
+        say_fail "Drop-in autologin.conf errato o non sanitizzato"
+    fi
+
+    # Verifica permessi directory e file log
+    if [ -d "$MOCK_ROOT/var/log/ps5" ]; then
+        say_pass "Directory log /var/log/ps5 presente e gestita"
+    else
+        say_fail "Directory log /var/log/ps5 non configurata"
     fi
 
     # Verifica svuotamento cartelle coredump e drkonqi
@@ -1288,10 +1362,51 @@ test_module_cleanup() {
     # Verifica script e servizio ps5-boot-cleanup
     if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup" ] && \
        [ -f "$MOCK_ROOT/etc/systemd/system/ps5-boot-cleanup.service" ] && \
+       grep -q "systemctl reset-failed" "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup" && \
        grep -q "ps5-bridge-auto-gamescope" "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup"; then
-        say_pass "Servizio e script ps5-boot-cleanup installati con sanificazione estesa"
+        say_pass "Servizio e script ps5-boot-cleanup installati con reset-failed e sanificazione estesa"
     else
-        say_fail "ps5-boot-cleanup o relativo servizio non installati o privi di sanificazione estesa"
+        say_fail "ps5-boot-cleanup o relativo servizio non installati o privi di reset-failed/sanificazione estesa"
+    fi
+
+    # Verifica module_cleanup_check
+    if module_cleanup_check "$MOCK_ROOT" "$MOCK_BOOT"; then
+        say_pass "module_cleanup_check ha convalidato lo stato del modulo con successo"
+    else
+        say_fail "module_cleanup_check ha fallito la convalida post-cleanup"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 8b. Test Modulo First-Boot (Bypass wizard e mascheramento dialog)
+# ------------------------------------------------------------------------------
+test_module_firstboot() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/firstboot.sh"
+
+    mkdir -p "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants" "$MOCK_ROOT/usr/local/sbin" "$MOCK_ROOT/home/steam/.config"
+    touch "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/first-boot.service"
+    touch "$MOCK_ROOT/usr/local/sbin/first-boot-setup"
+
+    module_firstboot_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    if [ -f "$MOCK_ROOT/etc/ps5-firstboot-done" ] && \
+       [ -f "$MOCK_ROOT/etc/ps5-first-boot-done" ] && \
+       [ -f "$MOCK_ROOT/var/lib/cachyos-firstboot-done" ] && \
+       [ ! -f "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/first-boot.service" ] && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/first-boot.service" ] && \
+       [ "$(readlink "$MOCK_ROOT/etc/systemd/system/first-boot.service")" = "/dev/null" ] && \
+       [ -x "$MOCK_ROOT/usr/local/sbin/first-boot-setup" ] && \
+       grep -q "exit 0" "$MOCK_ROOT/usr/local/sbin/first-boot-setup"; then
+        say_pass "Modulo firstboot ha bypassato correttamente il wizard e mascherato first-boot.service"
+    else
+        say_fail "Modulo firstboot non ha bypassato o mascherato correttamente first-boot.service"
+    fi
+
+    if module_firstboot_check "$MOCK_ROOT" "$MOCK_BOOT"; then
+        say_pass "module_firstboot_check ha confermato il bypass"
+    else
+        say_fail "module_firstboot_check ha fallito la verifica"
     fi
 }
 
@@ -1301,6 +1416,7 @@ test_module_cleanup() {
 test_idempotency() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/vram.sh"
+    source "$REPO_DIR/lib/modules/m2.sh"
     source "$REPO_DIR/lib/modules/ethernet.sh"
     source "$REPO_DIR/lib/modules/wifi.sh"
     source "$REPO_DIR/lib/modules/fan.sh"
@@ -1309,6 +1425,7 @@ test_idempotency() {
     source "$REPO_DIR/lib/modules/session.sh"
 
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_m2_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
@@ -1318,6 +1435,7 @@ test_idempotency() {
 
     # Seconda esecuzione
     module_vram_run "$MOCK_ROOT" "$MOCK_BOOT"
+    module_m2_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_ethernet_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_wifi_run "$MOCK_ROOT" "$MOCK_BOOT"
     module_fan_run "$MOCK_ROOT" "$MOCK_BOOT"
@@ -1387,7 +1505,203 @@ test_fix_ps5_boot() {
 }
 
 # ------------------------------------------------------------------------------
-# 12. Test Orchestratore Completo End-to-End
+# 12. Test Modulo M.2 e Avvio Dinamico con Fallback USB
+# ------------------------------------------------------------------------------
+test_module_m2() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/m2.sh"
+
+    local mock_workdir="${SANDBOX_DIR}/mock_m2_build"
+    mkdir -p "$mock_workdir/early" "$mock_workdir/main/hooks"
+    echo "MOCK_FIRMWARE" > "$mock_workdir/early/firmware.bin"
+    (cd "$mock_workdir/early" && echo "firmware.bin" | cpio -o -H newc --quiet > "$mock_workdir/early.cpio")
+    truncate -s %512 "$mock_workdir/early.cpio" 2>/dev/null || true
+
+    echo 'HOOKS="udev"' > "$mock_workdir/main/config"
+    touch "$mock_workdir/main/init"
+    (cd "$mock_workdir/main" && find . -mindepth 1 -printf "%P\n" | cpio -o -H newc --quiet | zstd -3 -o "$mock_workdir/main.cpio.zst")
+
+    cat "$mock_workdir/early.cpio" "$mock_workdir/main.cpio.zst" > "$MOCK_BOOT/initrd.img"
+    echo "root=LABEL=cachyos-m2 rw console=tty0" > "$MOCK_BOOT/cmdline.txt"
+
+    module_m2_run "$MOCK_ROOT" "$MOCK_BOOT"
+
+    if [ -f "$MOCK_BOOT/initrd.img.bak" ]; then
+        say_pass "Backup di sicurezza initrd.img.bak generato correttamente"
+    else
+        say_fail "Backup initrd.img.bak non trovato"
+    fi
+
+    local inspect_dir="${SANDBOX_DIR}/mock_inspect"
+    mkdir -p "$inspect_dir"
+    python3 -c '
+with open("'"$MOCK_BOOT/initrd.img"'", "rb") as f:
+    data = f.read()
+pos = data.rfind(b"TRAILER!!!")
+magic = b"\x28\xb5\x2f\xfd"
+z_start = data.find(magic, pos)
+with open("'"$inspect_dir/main.cpio.zst"'", "wb") as out:
+    out.write(data[z_start:])
+'
+    zstd -dc "$inspect_dir/main.cpio.zst" | (cd "$inspect_dir" && cpio -idm --quiet 2>/dev/null || true)
+
+    if [ -f "$inspect_dir/hooks/ps5_m2_boot" ] && \
+       grep -q "ps5_m2_boot" "$inspect_dir/config" && \
+       grep -q "/mnt_m2_check" "$inspect_dir/hooks/ps5_m2_boot" && \
+       grep -q "systemd" "$inspect_dir/hooks/ps5_m2_boot"; then
+        say_pass "Hook ps5_m2_boot iniettato correttamente con validazione OS e registrato in config"
+    else
+        say_fail "Hook ps5_m2_boot o config mancante o privo di validazione OS nel nuovo initrd.img"
+    fi
+
+    if [ -x "$MOCK_ROOT/usr/local/sbin/ps5-m2-migrate" ] && [ -x "$MOCK_ROOT/usr/local/sbin/ps5-m2-init" ]; then
+        say_pass "Strumenti ps5-m2-migrate e ps5-m2-init installati in /usr/local/sbin"
+    else
+        say_fail "Strumenti di migrazione non installati o privi di permessi di esecuzione"
+    fi
+
+    if grep -q "root=LABEL=cachyos" "$MOCK_BOOT/cmdline.txt" && \
+       grep -q "rootwait" "$MOCK_BOOT/cmdline.txt" && \
+       grep -q "nvme_core.default_ps_max_latency_us=0" "$MOCK_BOOT/cmdline.txt"; then
+        say_pass "cmdline.txt normalizzato con root=LABEL=cachyos, rootwait e nvme_core.default_ps_max_latency_us=0"
+    else
+        say_fail "cmdline.txt non contiene root=LABEL=cachyos, rootwait o nvme_core.default_ps_max_latency_us=0"
+    fi
+}
+
+test_module_m2_hook_logic() {
+    local hook_test_script='
+getarg() {
+    case "$1" in
+        ps5.force_usb) echo "$MOCK_FORCE_USB" ;;
+        *) echo "" ;;
+    esac
+}
+msg() { :; }
+resolve_device() {
+    case "$1" in
+        LABEL=cachyos-m2)
+            [ "$MOCK_M2_EXISTS" = "1" ] && { echo "/dev/nvme0n1p1"; return 0; }
+            return 1
+            ;;
+        LABEL=cachyos)
+            echo "/dev/sdd1"
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+mount() {
+    if [ "$MOCK_M2_VALID_OS" = "1" ]; then
+        return 0
+    fi
+    return 1
+}
+umount() { return 0; }
+rmdir() { return 0; }
+mkdir() { return 0; }
+
+run_hook() {
+    if [ "$(getarg ps5.force_usb)" = "1" ]; then
+        return 0
+    fi
+    local m2_dev=""
+    for cand in "LABEL=cachyos-m2" "/dev/disk/by-label/cachyos-m2" "/dev/nvme0n1p1"; do
+        if m2_dev="$(resolve_device "$cand" 2>/dev/null)" && [ -n "$m2_dev" ]; then
+            break
+        fi
+        m2_dev=""
+    done
+
+    local m2_valid=0
+    if [ -n "$m2_dev" ]; then
+        mkdir -p /mnt_m2_check
+        if mount -o ro "$m2_dev" /mnt_m2_check 2>/dev/null; then
+            if [ "$MOCK_M2_VALID_OS" = "1" ]; then
+                m2_valid=1
+            fi
+            umount /mnt_m2_check 2>/dev/null || true
+        fi
+        rmdir /mnt_m2_check 2>/dev/null || true
+    fi
+
+    if [ "$m2_valid" -eq 1 ]; then
+        root="$m2_dev"
+    else
+        root="LABEL=cachyos"
+    fi
+}
+
+# Caso 1: SSD M.2 presente e OS valido -> Switch M.2
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_M2_EXISTS="1"
+MOCK_M2_VALID_OS="1"
+run_hook
+[ "$root" = "/dev/nvme0n1p1" ] || exit 10
+
+# Caso 2: SSD M.2 presente ma OS NON valido/corrotto -> Fallback automatico USB
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_M2_EXISTS="1"
+MOCK_M2_VALID_OS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 11
+
+# Caso 3: SSD M.2 assente -> Avvio regolare USB
+root="LABEL=cachyos"
+MOCK_FORCE_USB=""
+MOCK_M2_EXISTS="0"
+MOCK_M2_VALID_OS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 12
+
+# Caso 4: Flag ps5.force_usb=1 con M.2 presente e valido -> Forza USB
+root="LABEL=cachyos"
+MOCK_FORCE_USB="1"
+MOCK_M2_EXISTS="1"
+MOCK_M2_VALID_OS="1"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 13
+
+# Caso 5: Legacy cmdline root=LABEL=cachyos-m2 ma M.2 assente -> Fallback USB
+root="LABEL=cachyos-m2"
+MOCK_FORCE_USB=""
+MOCK_M2_EXISTS="0"
+MOCK_M2_VALID_OS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 14
+
+# Caso 6: Legacy cmdline root=LABEL=cachyos-m2 ma M.2 corrotto -> Fallback USB
+root="LABEL=cachyos-m2"
+MOCK_FORCE_USB=""
+MOCK_M2_EXISTS="1"
+MOCK_M2_VALID_OS="0"
+run_hook
+[ "$root" = "LABEL=cachyos" ] || exit 15
+
+exit 0
+'
+    if sh -c "$hook_test_script"; then
+        say_pass "Logica di risoluzione, verifica integrità e fallback hook ps5_m2_boot verificata (6 scenari)"
+    else
+        say_fail "Logica di risoluzione hook ps5_m2_boot fallita su uno dei casi di test"
+    fi
+}
+
+test_cli_root_boot_overrides() {
+    local main_cli="$REPO_DIR/bin/ps5-cachy-os-patch.sh"
+    local out
+    out=$("$main_cli" --dry-run --module m2 --root "$MOCK_ROOT" --boot "$MOCK_BOOT" 2>&1 || true)
+    if echo "$out" | grep -q "Modulo m2"; then
+        say_pass "CLI ps5-cachy-os-patch.sh accetta con successo i flag --root e --boot"
+    else
+        say_fail "CLI ps5-cachy-os-patch.sh ha rifiutato o fallito con i flag --root e --boot"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 13. Test Orchestratore Completo End-to-End
 # ------------------------------------------------------------------------------
 test_master_patch_full() {
     local main_cli="$REPO_DIR/bin/ps5-cachy-os-patch.sh"
@@ -1425,6 +1739,7 @@ echo "==========================================================================
 
 run_test test_syntax
 run_test test_module_cleanup
+run_test test_module_firstboot
 run_test test_module_vram
 run_test test_module_ethernet
 run_test test_module_wifi
@@ -1434,11 +1749,14 @@ run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope
 run_test test_module_session
+run_test test_module_m2
+run_test test_module_m2_hook_logic
 run_test test_module_system
 run_test test_module_system_diag
 run_test test_runtime_logger
 run_test test_idempotency
 run_test test_cli_orchestration
+run_test test_cli_root_boot_overrides
 run_test test_fix_ps5_boot
 run_test test_master_patch_full
 

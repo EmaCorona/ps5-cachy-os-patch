@@ -7,13 +7,13 @@ detect_mounts() {
     # Se le variabili MOCK_ROOT o MOCK_BOOT sono già esportate (es. test sandbox), usale direttamente
     if [ -n "${MOCK_ROOT:-}" ] && [ -d "$MOCK_ROOT" ]; then
         CACHY_MNT="$MOCK_ROOT"
-    else
+    elif [ -z "${CACHY_MNT:-}" ] || [ ! -d "$CACHY_MNT" ]; then
         CACHY_MNT=""
     fi
 
     if [ -n "${MOCK_BOOT:-}" ] && [ -d "$MOCK_BOOT" ]; then
         BOOT_MNT="$MOCK_BOOT"
-    else
+    elif [ -z "${BOOT_MNT:-}" ] || [ ! -d "$BOOT_MNT" ]; then
         BOOT_MNT=""
     fi
 

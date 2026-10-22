@@ -11,7 +11,7 @@ Il patcher carica i moduli dalla cartella `lib/modules/` e li espone tramite tre
 - `module_<nome>_run "$CACHY_MNT" "$BOOT_MNT"`: applica o riscrive la configurazione nel filesystem CachyOS montato e, quando necessario, nella partizione di boot.
 - `module_<nome>_check "$CACHY_MNT" "$BOOT_MNT"`: verifica una parte dei file/marker attesi; non equivale a un test funzionale sull'hardware.
 
-Il master script `bin/ps5-cachy-os-patch.sh` dichiara e carica i moduli in questo ordine: `cleanup`, `vram`, `firstboot`, `bluetooth`, `ethernet`, `wifi`, `fan`, `kde`, `gamescope`, `session`, `system`. Alcuni moduli hanno dipendenze funzionali: la sessione richiama KDE/Gamescope e il modulo KDE richiama la configurazione sessione. Il ripristino rapido `bin/fix_ps5_boot.sh` applica invece un sottoinsieme di moduli in un ordine dedicato.
+Il master script `bin/ps5-cachy-os-patch.sh` dichiara e carica i moduli in questo ordine: `cleanup`, `vram`, `m2`, `firstboot`, `bluetooth`, `ethernet`, `wifi`, `fan`, `kde`, `gamescope`, `session`, `system`. Alcuni moduli hanno dipendenze funzionali: la sessione richiama KDE/Gamescope e il modulo KDE richiama la configurazione sessione. Il ripristino rapido `bin/fix_ps5_boot.sh` applica invece un sottoinsieme di moduli in un ordine dedicato.
 
 ## Schede dei moduli
 
@@ -19,6 +19,7 @@ Il master script `bin/ps5-cachy-os-patch.sh` dichiara e carica i moduli in quest
 | :--- | :--- | :--- |
 | `cleanup` | Rimozione di lock, coredump e stato sessione residuo. | [cleanup.md](cleanup.md) |
 | `vram` | Scrittura del valore VRAM nel supporto di boot. | [vram.md](vram.md) |
+| `m2` | Avvio prioritario da SSD M.2 interno (NVMe) con fallback su chiavetta USB e tool migrazione. | [m2.md](m2.md) |
 | `firstboot` | Disabilitazione dei wizard iniziali di CachyOS. | [firstboot.md](firstboot.md) |
 | `bluetooth` | Reload firmware e selezione del controller Bluetooth utilizzabile. | [bluetooth.md](bluetooth.md) |
 | `ethernet` | Profili NetworkManager, sincronizzazione orologio e diagnostica cablata. | [ethernet.md](ethernet.md) |

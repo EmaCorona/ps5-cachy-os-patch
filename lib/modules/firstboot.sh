@@ -20,14 +20,16 @@ module_firstboot_run() {
 
     # 1. Flag e marker per dichiarare il first-boot completato
     sudo touch "${cachy_mnt}/etc/ps5-firstboot-done" 2>/dev/null || true
+    sudo touch "${cachy_mnt}/etc/ps5-first-boot-done" 2>/dev/null || true
     sudo touch "${cachy_mnt}/var/lib/cachyos-firstboot-done" 2>/dev/null || true
     
-    # 2. Rimozione di script/servizi che lanciano il wizard o il dialog iniziale
+    # 2. Rimozione e disabilitazione di script/servizi che lanciano il wizard o il dialog iniziale
     for f in \
         "${cachy_mnt}/etc/systemd/system/cachyos-firstboot.service" \
         "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/cachyos-firstboot.service" \
         "${cachy_mnt}/etc/systemd/system/ps5-firstboot.service" \
         "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/ps5-firstboot.service" \
+        "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/first-boot.service" \
         "${cachy_mnt}/etc/xdg/autostart/cachyos-hello.desktop" \
         "${cachy_mnt}/etc/xdg/autostart/cachyos-welcome.desktop" \
         "${cachy_mnt}/home/steam/.config/autostart/cachyos-hello.desktop" \
@@ -37,6 +39,20 @@ module_firstboot_run() {
             sudo rm -f "$f"
         fi
     done
+
+    # 2b. Mascheramento preventivo di first-boot.service per impedire takeover di tty1
+    sudo ln -sf /dev/null "${cachy_mnt}/etc/systemd/system/first-boot.service" 2>/dev/null || true
+
+    # 2c. Neutralizzazione script first-boot-setup se presente
+    if [ -f "${cachy_mnt}/usr/local/sbin/first-boot-setup" ]; then
+        cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/first-boot-setup" >/dev/null
+#!/bin/bash
+# First-boot setup disabilitato automaticamente da ps5-cachy-os-patch
+touch /etc/ps5-first-boot-done /etc/ps5-firstboot-done 2>/dev/null || true
+exit 0
+EOF
+        sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/first-boot-setup" 2>/dev/null || true
+    fi
 
     # 3. Disabilitazione cachyos-welcome per l'utente steam
     sudo mkdir -p "${cachy_mnt}/home/steam/.config"
@@ -55,7 +71,7 @@ module_firstboot_check() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
 
-    if [ -f "${cachy_mnt}/etc/ps5-firstboot-done" ]; then
+    if [ -f "${cachy_mnt}/etc/ps5-firstboot-done" ] && [ -f "${cachy_mnt}/etc/ps5-first-boot-done" ]; then
         log_success "First-boot già bypassato."
         return 0
     fi
