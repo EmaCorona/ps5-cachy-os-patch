@@ -77,7 +77,7 @@ Il codice è organizzato in `lib/`:
 | **[`vram`](docs/modules/vram.md)** | [`lib/modules/vram.sh`](lib/modules/vram.sh) | Scrive il valore `0x100000000` (4 GiB) in `vram.txt` sulla partizione di boot; l'effetto finale dipende dal loader e dal kernel utilizzati. |
 | **[`m2`](docs/modules/m2.md)** | [`lib/modules/m2.sh`](lib/modules/m2.sh) | Inietta il hook mkinitcpio `ps5_m2_boot` in `initrd.img` per l'avvio prioritario da SSD M.2 interno (NVMe) con fallback automatico e trasparente su USB in assenza dell'SSD; include la suite di migrazione `ps5-m2-migrate` e `ps5-m2-init`. |
 | **[`firstboot`](docs/modules/firstboot.md)** | [`lib/modules/firstboot.sh`](lib/modules/firstboot.sh) | Disabilita il wizard a finestre di primo avvio di CachyOS per evitare blocchi e schermate blu in assenza di controller configurati. |
-| **[`bluetooth`](docs/modules/bluetooth.md)** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Configura il caricamento sicuro del firmware Bluetooth (evitando il reset distruttivo dell'hub USB) e il servizio `ps5-bt-quiet`, che identifica le interfacce presenti, disattiva quella fantasma quando riconosciuta e prova ad attivare il controller valido. |
+| **[`bluetooth`](docs/modules/bluetooth.md)** | [`lib/modules/bluetooth.sh`](lib/modules/bluetooth.sh) | Configura il caricamento sicuro del firmware Bluetooth (evitando il reset distruttivo dell'hub USB) e il servizio firmware `ps5-bluetooth-firmware.service` ordinato pre-BlueZ in `bluetooth.target`. |
 | **[`ethernet`](docs/modules/ethernet.md)** | [`lib/modules/ethernet.sh`](lib/modules/ethernet.sh) | Crea profili NetworkManager per Ethernet, disabilita IPv6 nei profili generati, configura `systemd-timesyncd` con server NTP e fallback HTTP Date e raccoglie diagnostica di rete post-boot (`ps5-net-diag`). |
 | **[`wifi`](docs/modules/wifi.md)** | [`lib/modules/wifi.sh`](lib/modules/wifi.sh) | Gestisce il firmware NXP IW620 quando rilevato e disponibile, evita il driver PCIe `mt7921e` considerato instabile nel target e mantiene il supporto ai dongle Wi-Fi USB. Il risultato dipende dal chip e dal firmware presente. |
 | **[`fan`](docs/modules/fan.md)** | [`lib/modules/fan.sh`](lib/modules/fan.sh) | Installa `ps5-fan-daemon`, con profilo termico continuo interpolato al grado, isteresi, limitatore di raffreddamento graduale e fallback PWM se esposto dall'hardware; include `ps5-temp`. |
@@ -156,7 +156,7 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 - **Wi-Fi interno e dongle USB**: `wifi` rileva il percorso hardware e prepara il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e`, considerato instabile sul target, distingue NXP da MediaTek e mantiene il supporto ai dongle USB. Il firmware corretto è necessario per caricare il driver NXP.
 
-- **Doppio controller Bluetooth**: il modulo `bluetooth` installa un servizio firmware e `ps5-bt-quiet`, che esamina i controller esposti dal kernel e tenta di disattivare l'interfaccia fantasma e attivare quella valida quando può distinguerle.
+- **Controller Bluetooth PS5**: il modulo `bluetooth` installa il servizio firmware dedicato `ps5-bluetooth-firmware.service` ordinato in `bluetooth.target` prima di BlueZ con disabilitazione del reset HCI (`btusb reset=0`), consentendo al driver di caricare correttamente il firmware MediaTek senza corrompere il controller USB Salina né bloccare il boot con script invasivi.
 
 ---
 

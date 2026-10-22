@@ -52,13 +52,16 @@ module_cleanup_run() {
     for stale_bin in \
         "${cachy_mnt}/usr/local/bin/ps5-bridge-auto-gamescope" \
         "${cachy_mnt}/usr/local/bin/ps5-apply-resolution" \
-        "${cachy_mnt}/usr/local/bin/ps5-drm-setup"
+        "${cachy_mnt}/usr/local/bin/ps5-drm-setup" \
+        "${cachy_mnt}/usr/local/sbin/ps5-bt-quiet"
     do
         if [ -f "$stale_bin" ]; then
             sudo rm -f "$stale_bin"
             log_info "Rimosso script dismesso: $(basename "$stale_bin")"
         fi
     done
+    sudo rm -f "${cachy_mnt}/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" 2>/dev/null || true
+    sudo rm -f "${cachy_mnt}/etc/systemd/system/ps5-bt-quiet.service" 2>/dev/null || true
 
     # 1d. Rimozione configurazioni e marker temporanei obsoleti
     for stale_conf in \
@@ -264,6 +267,7 @@ rm -f /etc/xdg/autostart/ps5-bridge-auto-gamescope.desktop /etc/xdg/autostart/ps
 rm -f /home/steam/.config/autostart/ps5-bridge-auto-gamescope.desktop /home/steam/.config/autostart/ps5-resolution.desktop 2>/dev/null || true
 rm -f /usr/local/bin/ps5-bridge-auto-gamescope /usr/local/bin/ps5-apply-resolution /etc/ps5-display.conf 2>/dev/null || true
 rm -f /home/steam/.config/gamescope/ps5-resolution.conf /home/steam/.ps5-display.log 2>/dev/null || true
+rm -f /usr/local/sbin/ps5-bt-quiet /etc/systemd/system/ps5-bt-quiet.service /etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service 2>/dev/null || true
 
 # If kwinoutputconfig.json forces 4K (3840), remove it to let KWin adhere to the stable 1080p60 kernel link
 if [ -f /home/steam/.config/kwinoutputconfig.json ] && grep -q "3840" /home/steam/.config/kwinoutputconfig.json 2>/dev/null; then

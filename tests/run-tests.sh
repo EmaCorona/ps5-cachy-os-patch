@@ -1177,7 +1177,6 @@ test_runtime_logger() {
     local scripts_to_check=(
         "$MOCK_ROOT/usr/local/sbin/ps5-boot-cleanup"
         "$MOCK_ROOT/usr/local/sbin/ps5-stage-firmware"
-        "$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
         "$MOCK_ROOT/usr/local/bin/ps5-fan-daemon"
         "$MOCK_ROOT/etc/NetworkManager/dispatcher.d/10-ps5-time-sync.sh"
         "$MOCK_ROOT/usr/local/sbin/ps5-net-diag"
@@ -1204,22 +1203,27 @@ test_module_bluetooth() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/bluetooth.sh"
 
+    # Simula file o symlink ps5-bt-quiet preesistente per testare la bonifica
+    mkdir -p "$MOCK_ROOT/usr/local/sbin" "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants"
+    touch "$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet" "$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    ln -sf /etc/systemd/system/ps5-bt-quiet.service "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
+
     module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
 
-    local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
-    local svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    local modprobe_conf="$MOCK_ROOT/etc/modprobe.d/ps5-bluetooth.conf"
     local fw_svc="$MOCK_ROOT/etc/systemd/system/ps5-bluetooth-firmware.service"
-    local bt_conf="$MOCK_ROOT/etc/bluetooth/main.conf"
-    if [ -x "$quiet" ] && sh -n "$quiet" && grep -q "btmgmt --index" "$quiet" && \
-       ! grep -q '/address' "$quiet" && \
-       grep -q "After=bluetooth.service ps5-bluetooth-firmware.service" "$svc" && \
-       [ -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ] && \
+    local fw_link="$MOCK_ROOT/etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service"
+    local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
+    local quiet_svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    local quiet_link="$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
+
+    if [ -f "$modprobe_conf" ] && grep -q "options btusb reset=0" "$modprobe_conf" && \
        [ -f "$fw_svc" ] && grep -q "modprobe -r btusb" "$fw_svc" && \
-       [ -f "$bt_conf" ] && grep -q "AutoEnable=true" "$bt_conf" && \
-       ! grep -q '\[ -z "\$addr" \] ||' "$quiet"; then
-        say_pass "ps5-bt-quiet installato e ps5-bluetooth-firmware ricarica btusb con AutoEnable attivo"
+       grep -q "WantedBy=bluetooth.target" "$fw_svc" && \
+       [ -L "$fw_link" ] && [ ! -e "$quiet" ] && [ ! -e "$quiet_svc" ] && [ ! -e "$quiet_link" ]; then
+        say_pass "Modulo bluetooth c3e6fd6 ripristinato: reset=0, reload firmware su bluetooth.target e bonifica ps5-bt-quiet"
     else
-        say_fail "ps5-bt-quiet, main.conf o ps5-bluetooth-firmware non configurati correttamente"
+        say_fail "Modulo bluetooth non conforme alla baseline c3e6fd6 o bonifica ps5-bt-quiet fallita"
     fi
 }
 
@@ -1243,6 +1247,9 @@ test_module_cleanup() {
     touch "$MOCK_ROOT/etc/ps5-display.conf"
     touch "$MOCK_ROOT/home/steam/.config/gamescope/ps5-resolution.conf"
     touch "$MOCK_ROOT/tmp/ps5-bridge-initialized"
+    touch "$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
+    touch "$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
+    ln -sf /etc/systemd/system/ps5-bt-quiet.service "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
     echo "PS5_OUTPUT_WIDTH=3840" > "$MOCK_ROOT/etc/ps5-gamescope.conf"
 
     # Simula servizio first-boot attivo e residui journal
@@ -1264,6 +1271,8 @@ test_module_cleanup() {
        [ ! -f "$MOCK_ROOT/etc/xdg/autostart/ps5-resolution.desktop" ] && \
        [ ! -f "$MOCK_ROOT/usr/local/bin/ps5-bridge-auto-gamescope" ] && \
        [ ! -f "$MOCK_ROOT/usr/local/bin/ps5-apply-resolution" ] && \
+       [ ! -f "$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet" ] && \
+       [ ! -L "$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service" ] && \
        [ ! -f "$MOCK_ROOT/etc/ps5-display.conf" ] && \
        [ ! -f "$MOCK_ROOT/home/steam/.config/gamescope/ps5-resolution.conf" ] && \
        [ ! -f "$MOCK_ROOT/tmp/ps5-bridge-initialized" ]; then

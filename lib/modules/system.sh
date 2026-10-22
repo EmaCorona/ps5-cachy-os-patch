@@ -161,7 +161,8 @@ else
         systemctl status ps5-fan-daemon.service --no-pager -n 5 2>&1 || true
         echo ""
         echo "--- Bluetooth ---"
-        systemctl status ps5-bt-quiet.service --no-pager -n 10 2>&1 || true
+        systemctl status bluetooth.service ps5-bluetooth-firmware.service --no-pager -n 10 2>&1 || true
+        command -v bluetoothctl >/dev/null 2>&1 && bluetoothctl list 2>&1 || true
         echo ""
         echo "--- Log fallback sessione (ultime 40 righe) ---"
         tail -n 40 /home/steam/.gamescope-fallback.log 2>/dev/null || echo "(nessun fallback registrato)"
