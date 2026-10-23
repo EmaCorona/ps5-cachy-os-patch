@@ -1187,6 +1187,7 @@ test_runtime_logger() {
         "$MOCK_ROOT/usr/bin/steamos-session-select"
         "$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
         "$MOCK_ROOT/usr/local/sbin/ps5-bt-diag"
+        "$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
     )
 
     local all_integrated=1
@@ -1213,10 +1214,12 @@ test_module_bluetooth() {
     module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
 
     local modprobe_conf="$MOCK_ROOT/etc/modprobe.d/ps5-bluetooth.conf"
+    local modules_load="$MOCK_ROOT/etc/modules-load.d/ps5-bluetooth.conf"
     local fw_svc="$MOCK_ROOT/etc/systemd/system/ps5-bluetooth-firmware.service"
     local fw_link="$MOCK_ROOT/etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service"
     local loader="$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
     local diag="$MOCK_ROOT/usr/local/sbin/ps5-bt-diag"
+    local pair_helper="$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
     local udev_rule="$MOCK_ROOT/etc/udev/rules.d/60-ps5-bluetooth.rules"
     local main_conf="$MOCK_ROOT/etc/bluetooth/main.conf"
     local input_conf="$MOCK_ROOT/etc/bluetooth/input.conf"
@@ -1225,18 +1228,22 @@ test_module_bluetooth() {
     local quiet_link="$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
 
     if [ -f "$modprobe_conf" ] && grep -q "options btusb reset=0" "$modprobe_conf" && \
+       [ -f "$modules_load" ] && grep -q "hid-playstation" "$modules_load" && \
        [ -f "$fw_svc" ] && grep -q "ps5-bluetooth-firmware-loader" "$fw_svc" && \
        grep -q "WantedBy=bluetooth.target" "$fw_svc" && \
        [ -L "$fw_link" ] && \
        [ -x "$loader" ] && sh -n "$loader" && grep -q "has_valid_hci" "$loader" && \
        [ -x "$diag" ] && sh -n "$diag" && grep -q "bluetoothctl" "$diag" && \
+       [ -x "$pair_helper" ] && sh -n "$pair_helper" && \
        [ -f "$udev_rule" ] && grep -q 'ATTR{bInterfaceNumber}=="02"' "$udev_rule" && \
        ! grep -q 'ATTR{bInterfaceNumber}=="01"' "$udev_rule" && \
        [ -f "$main_conf" ] && grep -q "AutoEnable=true" "$main_conf" && \
        grep -q "JustWorksRepairing=always" "$main_conf" && \
-       [ -f "$input_conf" ] && grep -q "UserspaceHID=true" "$input_conf" && \
+       grep -q "PairableTimeout=0" "$main_conf" && \
+       [ -f "$input_conf" ] && grep -q "UserspaceHID=false" "$input_conf" && \
+       ! grep -q "UserspaceHID=true" "$input_conf" && \
        [ ! -e "$quiet" ] && [ ! -e "$quiet_svc" ] && [ ! -e "$quiet_link" ]; then
-        say_pass "Modulo bluetooth configurato: reset=0, loader resiliente pre-BlueZ, udev IF 02 anti-phantom, AutoEnable/JustWorksRepairing, input.conf e ps5-bt-diag"
+        say_pass "Modulo bluetooth configurato: reset=0, loader resiliente, udev IF 02 anti-phantom, kernel HID DualSense, pair helper e ps5-bt-diag"
     else
         say_fail "Modulo bluetooth non conforme ai requisiti o file mancanti"
     fi
@@ -1256,7 +1263,7 @@ test_bluetooth_loader_scenarios() {
 
     local test_sandbox="$SANDBOX_DIR/bt_loader_test"
     rm -rf "$test_sandbox"
-    mkdir -p "$test_sandbox/bin" "$test_sandbox/sys_bt" "$test_sandbox/proc"
+    mkdir -p "$test_sandbox/bin" "$test_sandbox/sys_bt" "$test_sandbox/proc" "$test_sandbox/sys_usb"
 
     # Mock per modprobe e rfkill che registrano le invocazioni
     local log_ops="$test_sandbox/ops.log"
@@ -1266,7 +1273,10 @@ echo "modprobe $*" >> "$OP_LOG"
 case "$1" in
     btusb)
         if [ -f "$CREATE_HCI_FLAG" ]; then
-            mkdir -p "$SYS_BT_DIR/hci0"
+            mkdir -p "$SYS_BT_DIR/hci0/device"
+            echo "00" > "$SYS_BT_DIR/hci0/device/bInterfaceNumber"
+            echo "1" > "$SYS_BT_DIR/hci0/device/authorized"
+            echo "A0:B1:C2:D3:E4:F5" > "$SYS_BT_DIR/hci0/address"
         fi
         exit 0
         ;;
@@ -1287,25 +1297,35 @@ exit 0
 EOF
     chmod +x "$test_sandbox/bin/rfkill"
 
-    # Scenario 1: Controller hci0 già presente in sysfs
-    mkdir -p "$test_sandbox/sys_bt/hci0"
+    # Prepara mock hardware USB Bluetooth (Marvell 1286:2059)
+    mkdir -p "$test_sandbox/sys_usb/dev_bt"
+    echo "1286" > "$test_sandbox/sys_usb/dev_bt/idVendor"
+    echo "2059" > "$test_sandbox/sys_usb/dev_bt/idProduct"
+    echo "e0" > "$test_sandbox/sys_usb/dev_bt/bDeviceClass"
+
+    # Scenario 1: Controller hci0 già presente e valido in sysfs
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
+    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
     echo "btusb 57344 0" > "$test_sandbox/proc/modules"
     : > "$log_ops"
     local rc1=0
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc1=$?
 
     if [ "$rc1" -eq 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 1: controller già presente, skip reload verificato senza scaricamento modulo"
+        say_pass "Loader scenario 1: controller valido già presente, skip reload verificato senza scaricamento modulo"
     else
-        say_fail "Loader scenario 1: ha tentato il reload distruttivo con controller già presente"
+        say_fail "Loader scenario 1: ha tentato il reload distruttivo con controller valido già presente"
     fi
 
     # Scenario 2: btusb non presente in memoria -> probe iniziale da freddo
-    rm -rf "$test_sandbox/sys_bt/hci0"
+    rm -rf "$test_sandbox/sys_bt"/*
     : > "$test_sandbox/proc/modules"
     touch "$test_sandbox/create_hci"
     : > "$log_ops"
@@ -1313,6 +1333,7 @@ EOF
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc2=$?
 
@@ -1322,8 +1343,8 @@ EOF
         say_fail "Loader scenario 2: probe iniziale da freddo fallito"
     fi
 
-    # Scenario 3: btusb presente in memoria ma nessun controller -> ricaricamento controllato
-    rm -rf "$test_sandbox/sys_bt/hci0"
+    # Scenario 3: btusb presente in memoria ma nessun controller valido -> ricaricamento controllato (HW presente)
+    rm -rf "$test_sandbox/sys_bt"/*
     echo "btusb 57344 0" > "$test_sandbox/proc/modules"
     touch "$test_sandbox/create_hci"
     : > "$log_ops"
@@ -1331,31 +1352,41 @@ EOF
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc3=$?
 
     if [ "$rc3" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops" && grep -q "modprobe btusb" "$log_ops"; then
-        say_pass "Loader scenario 3: recupero controllato con modprobe -r solo quando btusb è orfano di controller"
+        say_pass "Loader scenario 3: recupero controllato con modprobe -r autorizzato solo su modulo orfano con HW presente"
     else
         say_fail "Loader scenario 3: ricaricamento controllato fallito su btusb orfano"
     fi
 
-    # Scenario 4: controller assente dopo tutti i tentativi -> fallimento con exit code 1
-    rm -rf "$test_sandbox/sys_bt/hci0"
+    # Scenario 4: nessun hardware Bluetooth USB presente sul bus -> evita modprobe -r ed esce con errore
+    rm -rf "$test_sandbox/sys_bt"/*
+    rm -rf "$test_sandbox/sys_usb"/*
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
     rm -f "$test_sandbox/create_hci"
     : > "$log_ops"
     local rc4=0
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc4=$?
 
-    if [ "$rc4" -ne 0 ]; then
-        say_pass "Loader scenario 4: controller assente rileva il guasto ed esce con stato non-zero (non maschera errori)"
+    if [ "$rc4" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 4: assenza di HW Bluetooth sul bus rileva l'assenza ed evita reload distruttivo (protezione xHCI)"
     else
-        say_fail "Loader scenario 4: ha mascherato con exit 0 l'assenza totale di controller Bluetooth"
+        say_fail "Loader scenario 4: ha tentato il reload di btusb senza hardware presente sul bus"
     fi
+
+    # Ripristina mock hardware USB Bluetooth per i test successivi
+    mkdir -p "$test_sandbox/sys_usb/dev_bt"
+    echo "1286" > "$test_sandbox/sys_usb/dev_bt/idVendor"
+    echo "2059" > "$test_sandbox/sys_usb/dev_bt/idProduct"
+    echo "e0" > "$test_sandbox/sys_usb/dev_bt/bDeviceClass"
 
     # Scenario 5: sblocco preventivo rfkill
     if grep -q "rfkill unblock bluetooth" "$log_ops"; then
@@ -1364,31 +1395,103 @@ EOF
         say_fail "Loader scenario 5: rfkill unblock bluetooth non invocato"
     fi
 
-    # Scenario 6: presenza del solo controller fantasma (interfaccia 02 o MAC 00:00:00:00:00:00)
+    # Scenario 6a: presenza del solo controller fantasma su interfaccia 02 (anche con MAC valido)
     rm -rf "$test_sandbox/sys_bt"/*
     mkdir -p "$test_sandbox/sys_bt/hci0/device"
     echo "02" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
+    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    rm -f "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc6a=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc6a=$?
+
+    if [ "$rc6a" -ne 0 ]; then
+        say_pass "Loader scenario 6a: controller su interfaccia 02 con MAC valido correttamente scartato come fantasma"
+    else
+        say_fail "Loader scenario 6a: ha accettato il controller fantasma su interfaccia 02"
+    fi
+
+    # Scenario 6b: controller con MAC nullo su interfaccia valida 00
+    rm -rf "$test_sandbox/sys_bt"/*
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
     echo "00:00:00:00:00:00" > "$test_sandbox/sys_bt/hci0/address"
     echo "btusb 57344 0" > "$test_sandbox/proc/modules"
     rm -f "$test_sandbox/create_hci"
     : > "$log_ops"
-    local rc6=0
+    local rc6b=0
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc6=$?
+    "$loader" >/dev/null 2>&1 || rc6b=$?
 
-    if [ "$rc6" -ne 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
-        say_pass "Loader scenario 6: controller fantasma su IF 02 rilevato e rifiutato; tentato recupero ed errore finale"
+    if [ "$rc6b" -ne 0 ]; then
+        say_pass "Loader scenario 6b: controller con MAC 00:00:00:00:00:00 su IF 00 scartato come non inizializzato"
     else
-        say_fail "Loader scenario 6: ha erroneamente considerato valido il controller fantasma su IF 02"
+        say_fail "Loader scenario 6b: ha accettato controller con MAC nullo"
+    fi
+
+    # Scenario 6c: controller con interfaccia deautorizzata (authorized=0)
+    rm -rf "$test_sandbox/sys_bt"/*
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "0" > "$test_sandbox/sys_bt/hci0/device/authorized"
+    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    rm -f "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc6c=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc6c=$?
+
+    if [ "$rc6c" -ne 0 ]; then
+        say_pass "Loader scenario 6c: controller con authorized=0 correttamente scartato"
+    else
+        say_fail "Loader scenario 6c: ha accettato controller deautorizzato da udev"
+    fi
+
+    # Scenario 6d: controller privo di metadato address (non terminata negoziazione)
+    rm -rf "$test_sandbox/sys_bt"/*
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
+    # Nessun file address
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    rm -f "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc6d=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc6d=$?
+
+    if [ "$rc6d" -ne 0 ]; then
+        say_pass "Loader scenario 6d: controller con metadati address mancanti correttamente scartato"
+    else
+        say_fail "Loader scenario 6d: ha accettato controller privo del file address"
     fi
 
     # Scenario 7: presenza di un controller valido (interfaccia 00 e MAC valido)
     rm -rf "$test_sandbox/sys_bt"/*
     mkdir -p "$test_sandbox/sys_bt/hci0/device"
     echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
     echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
     echo "btusb 57344 0" > "$test_sandbox/proc/modules"
     : > "$log_ops"
@@ -1396,6 +1499,7 @@ EOF
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
     PATH="$test_sandbox/bin:$PATH" \
     PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc7=$?
 
