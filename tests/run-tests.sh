@@ -617,7 +617,9 @@ int drmGetCap(int fd, uint64_t cap, uint64_t *val) {
     (void)fd; (void)cap; if (val) *val = 1; return 0;
 }
 SHIM_TEST_EOF
-    gcc -shared -fPIC -o "$mock_fake_drm_so" "$mock_fake_drm_c" 2>/dev/null || true
+    local shim_build_ok=1
+    local shim_build_log="$SANDBOX_DIR/shim_build.log"
+    gcc -shared -fPIC -o "$mock_fake_drm_so" "$mock_fake_drm_c" >"$shim_build_log" 2>&1 || shim_build_ok=0
 
     cat << 'CALLER_TEST_EOF' > "$mock_shim_test_c"
 #include <stdint.h>
@@ -633,20 +635,29 @@ int main() {
     return 0;
 }
 CALLER_TEST_EOF
-    gcc -O2 -o "$mock_shim_test_bin" "$mock_shim_test_c" -L"$SANDBOX_DIR" -ldrm -Wl,-rpath,"$SANDBOX_DIR" 2>/dev/null || true
+    # Link directly to the mock artifact: -ldrm would require the host's
+    # development libdrm.so symlink and could silently omit these checks in CI.
+    if [ "$shim_build_ok" -eq 1 ]; then
+        gcc -O2 -o "$mock_shim_test_bin" "$mock_shim_test_c" "$mock_fake_drm_so" \
+            -Wl,-rpath,"$SANDBOX_DIR" >>"$shim_build_log" 2>&1 || shim_build_ok=0
+    fi
 
     local shim_err="$SANDBOX_DIR/shim_stderr.txt"
-    if [ -x "$mock_shim_test_bin" ] && [ -f "$shim_so" ]; then
+    if [ "$shim_build_ok" -eq 1 ] && [ -x "$mock_shim_test_bin" ] && [ -f "$shim_so" ]; then
         if LD_PRELOAD="$shim_so" "$mock_shim_test_bin" 2>"$shim_err"; then
             say_pass "libps5-drm-8bpc.so intercetta correttamente drmModeGetPlane eliminando i formati 10-bit e azzerando ADDFB2_MODIFIERS"
-            if grep -q "ps5-drm-8bpc:" "$shim_err"; then
-                say_pass "libps5-drm-8bpc.so emette log diagnostici su stderr per plane e capabilities"
-            else
-                say_fail "libps5-drm-8bpc.so non ha emesso log su stderr"
-            fi
         else
             say_fail "libps5-drm-8bpc.so non ha filtrato correttamente i formati 10-bit o modifiers"
         fi
+        if grep -q "ps5-drm-8bpc:" "$shim_err"; then
+            say_pass "libps5-drm-8bpc.so emette log diagnostici su stderr per plane e capabilities"
+        else
+            say_fail "libps5-drm-8bpc.so non ha emesso log su stderr"
+        fi
+    else
+        cat "$shim_build_log" >&2
+        say_fail "Test funzionale shim non eseguibile: compilazione mock/caller fallita o shim mancante"
+        say_fail "Test diagnostiche shim non eseguibile: compilazione mock/caller fallita o shim mancante"
     fi
 
     # Verifica utility diagnostica ps5-video-diag (P1/P3/P4)

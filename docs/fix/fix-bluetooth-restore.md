@@ -35,7 +35,7 @@ La diagnostica include la topologia USB per raccogliere le prove mancanti.
 | File | Responsabilità |
 | --- | --- |
 | `lib/modules/bluetooth.sh` | Loader fail-safe, pairing, INI e diagnostica USB. |
-| `tests/run-tests.sh` | Casi positivi/negativi, comandi mock e idempotenza. |
+| `tests/run-tests.sh` | Casi Bluetooth, idempotenza e collegamento DRM mock riproducibile in CI. |
 | `docs/modules/bluetooth.md` | Contratto operativo, limiti e uso. |
 | `docs/fix/fix-bluetooth-restore.md` | Causa, correzione ed evidenze. |
 | `docs/fix/README.md` | Indice aggiornato. |
@@ -43,10 +43,21 @@ La diagnostica include la topologia USB per raccogliere le prove mancanti.
 
 ## Verifica e limiti
 
-La precedente dichiarazione di 120 test non era supportata dal runner: ogni
-`say_pass`/`say_fail` eseguito contribuisce al totale, non ogni funzione né ogni
-asserzione contenuta in una condizione. CI e runner locale eseguono la stessa
-suite; non si forza il conteggio a 120. Risultato corrente realmente eseguito con `./tests/run-tests.sh`:
+Riprodotta la suite originale su un archivio pulito di `507206fc46f7`:
+**120 superati, 0 falliti** in locale. Il log della
+[CI originale](https://github.com/EmaCorona/ps5-cachy-os-patch/actions/runs/40017437438)
+riporta invece **118 superati, 0 falliti**. Il confronto delle righe PASS individua
+esattamente due controlli dello shim DRM mancanti in CI: filtraggio formati e log.
+Il test creava `libdrm.so.2` mock ma collegava il caller con `-ldrm`, che cerca
+`libdrm.so`: il PC disponeva della dipendenza di sviluppo, il runner CI no.
+Il fallimento di gcc era ignorato e il blocco condizionale saltava entrambi i
+controlli senza segnalazioni. Ora il caller collega il percorso esatto della
+libreria mock e l'assenza del binario genera due fallimenti espliciti.
+Si modifica soltanto il test harness: nessun cambiamento al modulo grafico.
+
+Ogni `say_pass`/`say_fail` effettivamente eseguito contribuisce al totale, non ogni
+funzione né ogni asserzione interna. CI e locale devono eseguire gli stessi controlli.
+Risultato corrente realmente eseguito con `./tests/run-tests.sh`:
 
 ```text
 Risultati Test Suite: 149 superati, 0 falliti
