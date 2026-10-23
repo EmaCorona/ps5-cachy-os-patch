@@ -191,15 +191,21 @@ has_valid_hci() {
 has_bt_usb_hardware() {
     for dev in "$SYS_USB"/*; do
         [ -d "$dev" ] || continue
-        local vid="" pid=""
+        local vid="" pid="" removable=""
         [ -f "$dev/idVendor" ] && vid=$(cat "$dev/idVendor" 2>/dev/null)
         [ -f "$dev/idProduct" ] && pid=$(cat "$dev/idProduct" 2>/dev/null)
+        [ -f "$dev/removable" ] && removable=$(cat "$dev/removable" 2>/dev/null)
+
+        # Criterio di sicurezza fail-safe: se la periferica è contrassegnata come rimovibile ("removable")
+        # dal controller hub USB, viene scartata per evitare che dongle esterni collegati alle porte utente
+        # possano attivare un reload globale di btusb e destabilizzare il controller host xHCI Salina.
+        if [ "$removable" = "removable" ]; then
+            continue
+        fi
 
         # Rilevamento circoscritto rigorosamente all'hardware Bluetooth interno noto di PlayStation 5:
         # - Marvell Avastar 88W8997 (PS5 Fat/Digital CFI-10xx/11xx/12xx): 1286:2059
         # - MediaTek MT7921U / MT7922 (PS5 Slim CFI-20xx e revisioni): 0e8d:0608, 0e8d:0616, 0e8d:7922, 0e8d:7961
-        # Esclude espressamente dongle USB esterni generici per evitare reload distruttivi di btusb su xHCI Salina
-        # qualora la radio interna sia assente o non riconosciuta.
         if [ "$vid" = "1286" ] && [ "$pid" = "2059" ]; then
             return 0
         fi
@@ -401,10 +407,75 @@ fi
 echo "Ricerca del controller in corso (scansione 10s)..."
 bluetoothctl --timeout 10 scan on >/dev/null 2>&1 || true
 
-MAC=$(bluetoothctl devices 2>/dev/null | grep -iE "Wireless Controller|DualSense" | awk '{print $2}' | head -n 1)
+# Rilevamento deterministico del target tra controller multipli
+CANDIDATES=$(bluetoothctl devices 2>/dev/null | grep -iE "Wireless Controller|DualSense" | awk '{print $2}')
+
+if [ -z "$CANDIDATES" ]; then
+    echo "Nessun controller DualSense rilevato. Assicurati che sia in pairing mode e riesegui."
+    exit 1
+fi
+
+# Filtra candidati non ancora associati (in attesa di pairing)
+UNPAIRED=""
+for c in $CANDIDATES; do
+    if ! bluetoothctl info "$c" 2>/dev/null | grep -q "Paired: yes"; then
+        UNPAIRED="$UNPAIRED $c"
+    fi
+done
+
+# Selezione deterministica del target:
+# 1. Se fornito esplicitamente tramite variabile d'ambiente, usa direttamente il target specificato
+# 2. Se è presente esattamente un controller non associato (nuovo), selezionalo automaticamente
+# 3. Se ci sono più controller non associati, chiedi conferma interattiva o richiedi override
+# 4. Se tutti i controller sono già noti, consenti il re-pairing del singolo controller o selezione interattiva
+MAC=""
+unpaired_count=$(echo "$UNPAIRED" | wc -w)
+total_count=$(echo "$CANDIDATES" | wc -w)
+
+if [ -n "${DUALSENSE_TARGET_MAC:-}" ]; then
+    MAC="$DUALSENSE_TARGET_MAC"
+elif [ "$unpaired_count" -eq 1 ]; then
+    # Un solo controller nuovo in pairing mode: selezione automatica sicura
+    MAC=$(echo "$UNPAIRED" | tr -d ' ')
+elif [ "$unpaired_count" -gt 1 ]; then
+    # Controller multipli simultaneamente in pairing: risoluzione interattiva o override esplicito
+    if [ -t 0 ]; then
+        echo "Rilevati più controller in modalità pairing:"
+        i=1
+        for c in $UNPAIRED; do
+            echo "  $i) $c"
+            i=$((i + 1))
+        done
+        printf "Seleziona il controller da associare [1-%d]: " "$((i - 1))"
+        read -r choice
+        MAC=$(echo "$UNPAIRED" | awk -v n="$choice" '{print $n}')
+    else
+        echo "ERRORE: Rilevati più controller DualSense non associati. Imposta DUALSENSE_TARGET_MAC per l'esecuzione automatica."
+        exit 1
+    fi
+elif [ "$total_count" -eq 1 ]; then
+    # Nessun controller unpaired, ma un solo controller noto (re-pairing / riparazione)
+    MAC=$(echo "$CANDIDATES" | tr -d ' ')
+else
+    # Controller multipli già associati: selezione interattiva o override esplicito
+    if [ -t 0 ]; then
+        echo "Rilevati controller multipli già noti a BlueZ:"
+        i=1
+        for c in $CANDIDATES; do
+            echo "  $i) $c"
+            i=$((i + 1))
+        done
+        printf "Seleziona il controller da riassociare [1-%d]: " "$((i - 1))"
+        read -r choice
+        MAC=$(echo "$CANDIDATES" | awk -v n="$choice" '{print $n}')
+    else
+        echo "ERRORE: Rilevati controller multipli preesistenti. Imposta DUALSENSE_TARGET_MAC per l'esecuzione automatica."
+        exit 1
+    fi
+fi
 
 if [ -z "$MAC" ]; then
-    echo "Nessun controller DualSense rilevato. Assicurati che sia in pairing mode e riesegui."
+    echo "Errore nella selezione del MAC target."
     exit 1
 fi
 
@@ -442,11 +513,11 @@ check_mac_input_device() {
 
     # 1. Ricerca rigorosa blocco-per-blocco in /proc/bus/input/devices:
     # Il singolo blocco del controller DEVE contenere il MAC specifico (in Uniq o Phys)
-    # E un handler di eventi di input (event*) effettivo. Esclude tassativamente corrispondenze con altri pad.
+    # E un handler di eventi di input (event*) effettivo nello STESSO record.
     local proc_input="${PS5_PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
     if [ -f "$proc_input" ]; then
         if awk -v RS='' -v mac="$lower_mac" '
-            tolower($0) ~ ("uniq=" mac) || tolower($0) ~ ("phys=.*" mac) {
+            (index(tolower($0), "uniq=" mac) > 0 || index(tolower($0), "phys=" mac) > 0 || index(tolower($0), mac) > 0) {
                 if ($0 ~ /Handlers=.*event[0-9]+/) {
                     found = 1
                     exit 0
@@ -458,33 +529,46 @@ check_mac_input_device() {
         fi
     fi
 
-    # 2. Ricerca in sysfs su /sys/class/input:
-    # Verifica che il device input corrisponda esattamente al MAC E possieda un handler event*
+    # 2. Ricerca gerarchica in sysfs su /sys/class/input:
+    # Segue e verifica la relazione diretta tra inputN, il suo descrittore uniq e il suo handler eventN.
+    # Non usa mai pattern globali non correlati.
     local sys_input="${PS5_SYS_INPUT_DIR:-/sys/class/input}"
-    for u in "$sys_input"/input*/device/uniq; do
-        if [ -f "$u" ]; then
-            local val
-            val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            if [ "$val" = "$lower_mac" ]; then
-                local in_dir
-                in_dir=$(dirname "$(dirname "$u")")
-                for ev in "$in_dir"/event* "$sys_input"/event*; do
-                    if [ -e "$ev" ]; then
-                        return 0
-                    fi
-                done
+    if [ -d "$sys_input" ]; then
+        for u in "$sys_input"/input*/device/uniq "$sys_input"/input*/uniq; do
+            if [ -f "$u" ]; then
+                local val
+                val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                if [ "$val" = "$lower_mac" ]; then
+                    local in_dir
+                    in_dir=$(echo "$u" | sed 's#/device/uniq$##; s#/uniq$##')
+                    for ev in "$in_dir"/event[0-9]*; do
+                        if [ -e "$ev" ]; then
+                            return 0
+                        fi
+                    done
+                fi
             fi
-        fi
-    done
+        done
+
+        for u in "$sys_input"/event*/device/uniq; do
+            if [ -f "$u" ]; then
+                local val
+                val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                if [ "$val" = "$lower_mac" ]; then
+                    return 0
+                fi
+            fi
+        done
+    fi
 
     return 1
 }
 
-echo "Attesa conferma associazione, autorizzazione e creazione device input (fino a 20s)..."
+echo "Attesa conferma associazione, autorizzazione e creazione device input (fino a ${PS5_PAIR_TIMEOUT:-20}s)..."
 BONDED_AND_TRUSTED=0
 INPUT_CREATED=0
 
-for _ in $(seq 1 20); do
+for _ in $(seq 1 "${PS5_PAIR_TIMEOUT:-20}"); do
     sleep 1
     if [ "$BONDED_AND_TRUSTED" -eq 0 ]; then
         if check_mac_bonded_and_trusted "$MAC"; then

@@ -10,7 +10,7 @@ Questo file raccoglie le regole operative condivise per gli agenti AI che analiz
 
 1. **Parti da `main` aggiornato.** Prima di iniziare, recupera lo stato remoto più recente e crea il branch di lavoro a partire da esso.
 2. **Crea un branch con il prefisso corretto.** Usa `feature/<slug-descrittivo>` per una nuova funzionalità, `fix/<slug-descrittivo>` per una correzione e `docs/<slug-descrittivo>` per modifiche o aggiunte alla documentazione. Scegli uno slug breve e specifico, coerente con lo stile Git del repository. Se esiste già un branch per lo stesso lavoro, verifica che sia quello giusto prima di riutilizzarlo.
-3. **Sviluppa esclusivamente sul branch dedicato e sincronizza sempre il remoto.** Implementazione, test e documentazione correlata devono essere aggiunti lì. Non fare commit diretti su `main`, non spostare il branch `main` e non integrare in anticipo modifiche solo perché i test automatici passano. **Ogni commit creato in locale sul branch dedicato deve essere tempestivamente pushato anche sul corrispondente branch remoto (`origin/feature/...`, `origin/fix/...`, `origin/docs/...`).** Non lasciare commit solo in locale.
+3. **Sviluppa esclusivamente sul branch dedicato e sincronizza sempre il remoto.** Implementazione, test e documentazione correlata devono essere aggiunti lì. Non fare commit diretti su `main`, non spostare il branch `main` e non integrare in anticipo modifiche solo perché i test automatici passano. **Ogni commit creato in locale sul branch dedicato deve essere tempestivamente pushato anche sul corrispondente branch remoto (`origin/feature/...`, `origin/fix/...`, `origin/docs/...`), previo superamento obbligatorio del 100% dei test locali.** Non lasciare commit solo in locale.
 4. **Mantieni documentazione e test nello stesso lavoro.** Per ogni fix rispetta la regola di documentazione in `docs/fix/` e aggiorna `docs/fix/README.md`; se sono interessati moduli, aggiorna anche le relative schede in `docs/modules/`. Aggiungi o aggiorna i test pertinenti e non dichiarare verifiche mai eseguite.
 5. **Concludi l'implementazione senza fare merge.** Rivedi il diff, esegui le verifiche disponibili e comunica all'utente il branch, il riepilogo delle modifiche e i risultati dei test, distinguendo i test automatici dalle prove richieste sull'hardware reale. Lascia le modifiche sul branch dedicato (pushato su remoto) in attesa che l'utente possa testarle.
 6. **Attendi l'approvazione esplicita dell'utente.** Il merge verso `main` è vietato fino a quando l'utente non ha testato il lavoro e non ha dato chiaramente l'OK all'integrazione. Test verdi, CI superata, una richiesta di implementazione o il silenzio dell'utente non equivalgono ad autorizzazione. Se l'OK non è stato dato, non fare merge, non chiudere il lavoro come integrato e non cancellare il branch.
@@ -90,6 +90,16 @@ Procedura operativa obbligatoria:
    - Aggiorna il generatore interno dello script `/usr/local/sbin/ps5-boot-cleanup` in `lib/modules/cleanup.sh` affinché ogni singolo avvio su PS5 sia protetto anche in caso di crash anomalo o interruzione brutale dell'alimentazione.
 3. **Garantire l'indipendenza e l'immunità tra gli avvii**: Nessun errore derivante da test precedenti, branch alternativi, feature sperimentali o arresti imprevisti deve poter corrompere o impedire gli avvii successivi del sistema.
 4. **Aggiornamento della test suite (`tests/run-tests.sh`)**: Aggiungi test automatizzati che simulino la presenza dell'errore bloccante o dello stato orfano e verifichino che il modulo di cleanup lo bonifichi con successo.
+
+## Regola obbligatoria: esecuzione e superamento al 100% dei test in locale prima di qualsiasi push remoto
+
+**Prima di eseguire qualunque `git push` verso il repository remoto su QUALSIASI branch (`feature/*`, `fix/*`, `docs/*`, `main` o qualsiasi altro branch), è obbligatorio eseguire la suite di test in locale (`./tests/run-tests.sh`) e verificare che TUTTI i test passino senza eccezioni (100% superati, 0 falliti).**
+
+### Dettagli operativi vincolanti:
+1. **Zero tolleranza sui test falliti**: È severamente vietato pushare codice, script o documentazione sul repository remoto se anche un solo test della suite locale fallisce.
+2. **Ambito di applicazione universale**: La regola si applica indistintamente a tutti i branch del repository (`feature/*`, `fix/*`, `docs/*`, `main` o branch di integrazione temporanei).
+3. **Comando di verifica**: Il comando tassativo di verifica locale è `./tests/run-tests.sh` (oppure `./tests/run-all-tests.sh`). L'output finale deve riportare esplicitamente `0 falliti`.
+4. **Isolamento e risoluzione preventiva**: Qualora un test locale fallisca o una regressione venga evidenziata, il problema deve essere diagnosticato e corretto interamente in locale prima di qualsiasi tentativo di push remoto.
 
 ## Come estendere questo file
 

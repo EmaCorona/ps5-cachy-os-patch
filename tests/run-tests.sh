@@ -1256,10 +1256,14 @@ test_module_bluetooth() {
 }
 
 test_bluetooth_loader_scenarios() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/bluetooth.sh"
+
     local loader="$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
     if [ ! -x "$loader" ]; then
         module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
     fi
+    [ -x "$loader" ] || { say_fail "ps5-bluetooth-firmware-loader non presente o non eseguibile"; return 1; }
 
     local test_sandbox="$SANDBOX_DIR/bt_loader_test"
     rm -rf "$test_sandbox"
@@ -1446,6 +1450,31 @@ EOF
         say_fail "Loader scenario 4d: mancato riconoscimento hardware MediaTek interno PS5 Slim"
     fi
 
+    # Scenario 4e: Hardware interno (1286:2059) contrassegnato come "removable" (dongle o enclosure esterna)
+    # Deve essere scartato per evitare che porte esterne attivino il reload del modulo btusb
+    rm -rf "$test_sandbox/sys_usb"/*
+    rm -rf "$test_sandbox/sys_bt"/*
+    rm -f "$test_sandbox/create_hci"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    mkdir -p "$test_sandbox/sys_usb/dev_removable"
+    echo "1286" > "$test_sandbox/sys_usb/dev_removable/idVendor"
+    echo "2059" > "$test_sandbox/sys_usb/dev_removable/idProduct"
+    echo "removable" > "$test_sandbox/sys_usb/dev_removable/removable"
+    : > "$log_ops"
+    local rc4e=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc4e=$?
+
+    if [ "$rc4e" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 4e: dispositivo marcato 'removable' correttamente scartato, reload evitato"
+    else
+        say_fail "Loader scenario 4e: ha autorizzato il reload su dispositivo marcato 'removable'"
+    fi
+
     # Ripristina mock hardware USB Bluetooth per i test successivi
     mkdir -p "$test_sandbox/sys_usb/dev_bt"
     echo "1286" > "$test_sandbox/sys_usb/dev_bt/idVendor"
@@ -1575,10 +1604,15 @@ EOF
 }
 
 test_dualsense_pair_scenarios() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/bluetooth.sh"
+
+    export PS5_PAIR_TIMEOUT=2
     local pair_helper="$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
     if [ ! -x "$pair_helper" ]; then
         module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
     fi
+    [ -x "$pair_helper" ] || { say_fail "ps5-dualsense-pair non presente o non eseguibile"; return 1; }
 
     local test_sandbox="$SANDBOX_DIR/bt_pair_test"
     rm -rf "$test_sandbox"
@@ -1605,15 +1639,29 @@ case "$1" in
     devices)
         if [ "$BTCTL_FOUND_DEVICE" = "1" ]; then
             echo "Device 04:A3:43:11:22:33 Wireless Controller"
+        elif [ "$BTCTL_FOUND_DEVICE" = "multi" ]; then
+            echo "Device 04:A3:43:11:22:33 Wireless Controller"
+            echo "Device 04:A3:43:44:55:66 Wireless Controller"
         fi
         exit 0
         ;;
     info)
-        local target="$2"
+        target="$2"
         if [ "$BTCTL_PAIR_FAIL" = "1" ]; then
             echo "Device $target"
             echo "Paired: no"
             echo "Trusted: no"
+        elif [ "$BTCTL_PAIR_FAIL" = "target_only" ]; then
+            if [ "$target" = "04:A3:43:11:22:33" ]; then
+                echo "Device $target"
+                echo "Paired: yes"
+                echo "Trusted: yes"
+                [ "$BTCTL_CONNECTED" = "1" ] && echo "Connected: yes"
+            else
+                echo "Device $target"
+                echo "Paired: no"
+                echo "Trusted: no"
+            fi
         else
             echo "Device $target"
             echo "Paired: yes"
@@ -1720,6 +1768,88 @@ EOF
         say_pass "Pair assistant scenario 4: controller associato e input device kernel convalidati con successo (exit 0)"
     else
         say_fail "Pair assistant scenario 4: fallita validazione con controller e input device validi"
+    fi
+
+    # Scenario P5a: candidati multipli non associati in modalità non interattiva senza target esplicito -> errore deterministico
+    local rc_p5a=0
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=multi BTCTL_PAIR_FAIL=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" </dev/null >/dev/null 2>&1 || rc_p5a=$?
+
+    if [ "$rc_p5a" -ne 0 ]; then
+        say_pass "Pair assistant scenario 5a: controller multipli non associati senza override esplicito restituiscono errore"
+    else
+        say_fail "Pair assistant scenario 5a: esecuzione non interattiva ambigua non ha restituito errore"
+    fi
+
+    # Scenario P5b: candidati multipli non associati con DUALSENSE_TARGET_MAC esplicito -> risoluzione e successo
+    local rc_p5b=0
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=multi BTCTL_PAIR_FAIL=target_only BTCTL_CONNECTED=1 \
+    DUALSENSE_TARGET_MAC="04:A3:43:11:22:33" \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" </dev/null >/dev/null 2>&1 || rc_p5b=$?
+
+    if [ "$rc_p5b" -eq 0 ]; then
+        say_pass "Pair assistant scenario 5b: override DUALSENSE_TARGET_MAC seleziona e associa correttamente il target"
+    else
+        say_fail "Pair assistant scenario 5b: fallita selezione target con DUALSENSE_TARGET_MAC"
+    fi
+
+    # Scenario P6a: validazione input device via gerarchia sysfs (input*/device/uniq con event* figlio dedicato)
+    local rc_p6a=0
+    rm -rf "$test_sandbox/sys_input"/*
+    mkdir -p "$test_sandbox/sys_input/input10/device"
+    echo "04:a3:43:11:22:33" > "$test_sandbox/sys_input/input10/device/uniq"
+    mkdir -p "$test_sandbox/sys_input/input10/event10"
+    : > "$test_sandbox/proc/input_devices" # Procfs vuoto: forza fallback rigoroso su sysfs
+
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    DUALSENSE_TARGET_MAC="" \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p6a=$?
+
+    if [ "$rc_p6a" -eq 0 ]; then
+        say_pass "Pair assistant scenario 6a: riconoscimento input device gerarchico via sysfs convalidato"
+    else
+        say_fail "Pair assistant scenario 6a: mancato riconoscimento gerarchico su sysfs"
+    fi
+
+    # Scenario P6b: sysfs con uniq corrispondente ma SENZA handler event* figlio -> fallimento (exit != 0)
+    local rc_p6b=0
+    rm -rf "$test_sandbox/sys_input/input10/event10"
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p6b=$?
+
+    if [ "$rc_p6b" -ne 0 ]; then
+        say_pass "Pair assistant scenario 6b: sysfs con nodo input senza handler event* figlio rifiutato (exit != 0)"
+    else
+        say_fail "Pair assistant scenario 6b: falso successo con nodo input privo di handler event*"
+    fi
+
+    # Scenario P6c: sysfs event*/device/uniq corrispondente a MAC estraneo -> fallimento (exit != 0)
+    local rc_p6c=0
+    rm -rf "$test_sandbox/sys_input"/*
+    mkdir -p "$test_sandbox/sys_input/event99/device"
+    echo "ff:ee:dd:cc:bb:aa" > "$test_sandbox/sys_input/event99/device/uniq"
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p6c=$?
+
+    if [ "$rc_p6c" -ne 0 ]; then
+        say_pass "Pair assistant scenario 6c: sysfs con MAC estraneo rifiutato correttamente (exit != 0)"
+    else
+        say_fail "Pair assistant scenario 6c: falso successo con handler event sysfs estraneo"
     fi
 }
 
