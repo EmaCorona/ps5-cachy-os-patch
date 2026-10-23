@@ -1258,598 +1258,243 @@ test_module_bluetooth() {
 test_bluetooth_loader_scenarios() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/bluetooth.sh"
-
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
     local loader="$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
-    if [ ! -x "$loader" ]; then
-        module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
-    fi
-    [ -x "$loader" ] || { say_fail "ps5-bluetooth-firmware-loader non presente o non eseguibile"; return 1; }
-
-    local test_sandbox="$SANDBOX_DIR/bt_loader_test"
-    rm -rf "$test_sandbox"
-    mkdir -p "$test_sandbox/bin" "$test_sandbox/sys_bt" "$test_sandbox/proc" "$test_sandbox/sys_usb"
-
-    # Mock per modprobe e rfkill che registrano le invocazioni
-    local log_ops="$test_sandbox/ops.log"
-    cat << 'EOF' > "$test_sandbox/bin/modprobe"
+    local box="$SANDBOX_DIR/loader" kind removable rc expected probe loaded
+    mkdir -p "$box/bin" "$box/bt" "$box/usb"
+    cat > "$box/bin/modprobe" <<'EOF'
 #!/bin/sh
 echo "modprobe $*" >> "$OP_LOG"
-case "$1" in
-    btusb)
-        if [ -f "$CREATE_HCI_FLAG" ]; then
-            mkdir -p "$SYS_BT_DIR/hci0/device"
-            echo "00" > "$SYS_BT_DIR/hci0/device/bInterfaceNumber"
-            echo "1" > "$SYS_BT_DIR/hci0/device/authorized"
-            echo "A0:B1:C2:D3:E4:F5" > "$SYS_BT_DIR/hci0/address"
-        fi
-        exit 0
-        ;;
-    -r)
-        exit 0
-        ;;
-    *)
-        exit 0
-        ;;
-esac
+if [ "$1" = btusb ] && [ "$MAKE_HCI" = yes ]; then
+    mkdir -p "$PS5_SYS_BLUETOOTH_DIR/hci0/device"
+    echo A0:B1:C2:D3:E4:F5 > "$PS5_SYS_BLUETOOTH_DIR/hci0/address"
+    echo 00 > "$PS5_SYS_BLUETOOTH_DIR/hci0/device/bInterfaceNumber"
+    echo 1 > "$PS5_SYS_BLUETOOTH_DIR/hci0/device/authorized"
+fi
 EOF
-    chmod +x "$test_sandbox/bin/modprobe"
-
-    cat << 'EOF' > "$test_sandbox/bin/rfkill"
+    cat > "$box/bin/rfkill" <<'EOF'
 #!/bin/sh
 echo "rfkill $*" >> "$OP_LOG"
-exit 0
 EOF
-    chmod +x "$test_sandbox/bin/rfkill"
-
-    # Prepara mock hardware USB Bluetooth (Marvell 1286:2059)
-    mkdir -p "$test_sandbox/sys_usb/dev_bt"
-    echo "1286" > "$test_sandbox/sys_usb/dev_bt/idVendor"
-    echo "2059" > "$test_sandbox/sys_usb/dev_bt/idProduct"
-    echo "e0" > "$test_sandbox/sys_usb/dev_bt/bDeviceClass"
-
-    # Scenario 1: Controller hci0 già presente e valido in sysfs
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    : > "$log_ops"
-    local rc1=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc1=$?
-
-    if [ "$rc1" -eq 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 1: controller valido già presente, skip reload verificato senza scaricamento modulo"
-    else
-        say_fail "Loader scenario 1: ha tentato il reload distruttivo con controller valido già presente"
-    fi
-
-    # Scenario 2: btusb non presente in memoria -> probe iniziale da freddo
-    rm -rf "$test_sandbox/sys_bt"/*
-    : > "$test_sandbox/proc/modules"
-    touch "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc2=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc2=$?
-
-    if [ "$rc2" -eq 0 ] && grep -q "modprobe btusb" "$log_ops" && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 2: caricamento iniziale da freddo senza scaricamento previo"
-    else
-        say_fail "Loader scenario 2: probe iniziale da freddo fallito"
-    fi
-
-    # Scenario 3: btusb presente in memoria ma nessun controller valido -> ricaricamento controllato (HW presente)
-    rm -rf "$test_sandbox/sys_bt"/*
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    touch "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc3=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc3=$?
-
-    if [ "$rc3" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops" && grep -q "modprobe btusb" "$log_ops"; then
-        say_pass "Loader scenario 3: recupero controllato con modprobe -r autorizzato solo su modulo orfano con HW presente"
-    else
-        say_fail "Loader scenario 3: ricaricamento controllato fallito su btusb orfano"
-    fi
-
-    # Scenario 4: nessun hardware Bluetooth USB presente sul bus -> evita modprobe -r ed esce con errore
-    rm -rf "$test_sandbox/sys_bt"/*
-    rm -rf "$test_sandbox/sys_usb"/*
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    rm -f "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc4=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc4=$?
-
-    if [ "$rc4" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 4a: assenza di HW Bluetooth sul bus rileva l'assenza ed evita reload distruttivo (protezione xHCI)"
-    else
-        say_fail "Loader scenario 4a: ha tentato il reload di btusb senza hardware presente sul bus"
-    fi
-
-    # Scenario 4b: presenza di dispositivo USB estraneo (non-Bluetooth) con VID 1286/0e8d ma senza interfaccia BT
-    rm -rf "$test_sandbox/sys_usb"/*
-    mkdir -p "$test_sandbox/sys_usb/dev_storage"
-    echo "1286" > "$test_sandbox/sys_usb/dev_storage/idVendor"
-    echo "9999" > "$test_sandbox/sys_usb/dev_storage/idProduct"
-    echo "08" > "$test_sandbox/sys_usb/dev_storage/bDeviceClass" # Mass Storage
-    : > "$log_ops"
-    local rc4b=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc4b=$?
-
-    if [ "$rc4b" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 4b: dispositivo USB estraneo (VID Marvell ma non-BT) correttamente scartato, reload evitato"
-    else
-        say_fail "Loader scenario 4b: falso positivo su hardware USB non-Bluetooth"
-    fi
-
-    # Scenario 4c: dongle Bluetooth USB esterno generico (es. Realtek 0bda:b85b)
-    # Deve essere escluso dal recupero firmware interno PS5 per evitare stalli xHCI se la radio interna è assente
-    rm -rf "$test_sandbox/sys_usb"/*
-    mkdir -p "$test_sandbox/sys_usb/dev_dongle"
-    echo "0bda" > "$test_sandbox/sys_usb/dev_dongle/idVendor"
-    echo "b85b" > "$test_sandbox/sys_usb/dev_dongle/idProduct"
-    echo "e0" > "$test_sandbox/sys_usb/dev_dongle/bDeviceClass"
-    : > "$log_ops"
-    local rc4c=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc4c=$?
-
-    if [ "$rc4c" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 4c: dongle USB BT esterno generico escluso da recovery interno PS5 (xHCI protetto)"
-    else
-        say_fail "Loader scenario 4c: ha erroneamente trattato un dongle esterno come hardware interno PS5"
-    fi
-
-    # Scenario 4d: hardware Bluetooth interno MediaTek MT7921U (PS5 Slim 0e8d:0608)
-    rm -rf "$test_sandbox/sys_usb"/*
-    mkdir -p "$test_sandbox/sys_usb/dev_mtk"
-    echo "0e8d" > "$test_sandbox/sys_usb/dev_mtk/idVendor"
-    echo "0608" > "$test_sandbox/sys_usb/dev_mtk/idProduct"
-    touch "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc4d=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc4d=$?
-
-    if [ "$rc4d" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
-        say_pass "Loader scenario 4d: hardware interno MediaTek 0e8d:0608 (PS5 Slim) riconosciuto e recovery autorizzato"
-    else
-        say_fail "Loader scenario 4d: mancato riconoscimento hardware MediaTek interno PS5 Slim"
-    fi
-
-    # Scenario 4e: Hardware interno (1286:2059) contrassegnato come "removable" (dongle o enclosure esterna)
-    # Deve essere scartato per evitare che porte esterne attivino il reload del modulo btusb
-    rm -rf "$test_sandbox/sys_usb"/*
-    rm -rf "$test_sandbox/sys_bt"/*
-    rm -f "$test_sandbox/create_hci"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    mkdir -p "$test_sandbox/sys_usb/dev_removable"
-    echo "1286" > "$test_sandbox/sys_usb/dev_removable/idVendor"
-    echo "2059" > "$test_sandbox/sys_usb/dev_removable/idProduct"
-    echo "removable" > "$test_sandbox/sys_usb/dev_removable/removable"
-    : > "$log_ops"
-    local rc4e=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc4e=$?
-
-    if [ "$rc4e" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 4e: dispositivo marcato 'removable' correttamente scartato, reload evitato"
-    else
-        say_fail "Loader scenario 4e: ha autorizzato il reload su dispositivo marcato 'removable'"
-    fi
-
-    # Ripristina mock hardware USB Bluetooth per i test successivi
-    mkdir -p "$test_sandbox/sys_usb/dev_bt"
-    echo "1286" > "$test_sandbox/sys_usb/dev_bt/idVendor"
-    echo "2059" > "$test_sandbox/sys_usb/dev_bt/idProduct"
-    echo "e0" > "$test_sandbox/sys_usb/dev_bt/bDeviceClass"
-
-    # Scenario 5: sblocco preventivo rfkill
-    if grep -q "rfkill unblock bluetooth" "$log_ops"; then
-        say_pass "Loader scenario 5: sblocco preventivo rfkill eseguito correttamente"
-    else
-        say_fail "Loader scenario 5: rfkill unblock bluetooth non invocato"
-    fi
-
-    # Scenario 6a: presenza del solo controller fantasma su interfaccia 02 (anche con MAC valido)
-    rm -rf "$test_sandbox/sys_bt"/*
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "02" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    rm -f "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc6a=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc6a=$?
-
-    if [ "$rc6a" -ne 0 ]; then
-        say_pass "Loader scenario 6a: controller su interfaccia 02 con MAC valido correttamente scartato come fantasma"
-    else
-        say_fail "Loader scenario 6a: ha accettato il controller fantasma su interfaccia 02"
-    fi
-
-    # Scenario 6b: controller con MAC nullo su interfaccia valida 00
-    rm -rf "$test_sandbox/sys_bt"/*
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    echo "00:00:00:00:00:00" > "$test_sandbox/sys_bt/hci0/address"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    rm -f "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc6b=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc6b=$?
-
-    if [ "$rc6b" -ne 0 ]; then
-        say_pass "Loader scenario 6b: controller con MAC 00:00:00:00:00:00 su IF 00 scartato come non inizializzato"
-    else
-        say_fail "Loader scenario 6b: ha accettato controller con MAC nullo"
-    fi
-
-    # Scenario 6c: controller con interfaccia deautorizzata (authorized=0)
-    rm -rf "$test_sandbox/sys_bt"/*
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "0" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    rm -f "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc6c=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc6c=$?
-
-    if [ "$rc6c" -ne 0 ]; then
-        say_pass "Loader scenario 6c: controller con authorized=0 correttamente scartato"
-    else
-        say_fail "Loader scenario 6c: ha accettato controller deautorizzato da udev"
-    fi
-
-    # Scenario 6d: controller privo di metadato address (non terminata negoziazione)
-    rm -rf "$test_sandbox/sys_bt"/*
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    # Nessun file address
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    rm -f "$test_sandbox/create_hci"
-    : > "$log_ops"
-    local rc6d=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc6d=$?
-
-    if [ "$rc6d" -ne 0 ]; then
-        say_pass "Loader scenario 6d: controller con metadati address mancanti correttamente scartato"
-    else
-        say_fail "Loader scenario 6d: ha accettato controller privo del file address"
-    fi
-
-    # Scenario 7: presenza di un controller valido (interfaccia 00 e MAC valido)
-    rm -rf "$test_sandbox/sys_bt"/*
-    mkdir -p "$test_sandbox/sys_bt/hci0/device"
-    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
-    echo "1" > "$test_sandbox/sys_bt/hci0/device/authorized"
-    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
-    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
-    : > "$log_ops"
-    local rc7=0
-    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
-    PATH="$test_sandbox/bin:$PATH" \
-    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
-    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
-    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
-    "$loader" >/dev/null 2>&1 || rc7=$?
-
-    if [ "$rc7" -eq 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 7: controller valido verificato (interfaccia 00 e MAC valido), skip reload confermato"
-    else
-        say_fail "Loader scenario 7: fallita validazione controller valido su IF 00"
-    fi
+    printf '#!/bin/sh\nexit 0\n' > "$box/bin/sleep"
+    chmod +x "$box/bin/"*
+    # Every case checks exit status AND the complete destructive/non-destructive command policy.
+    for kind in valid absent generic known-missing known-fixed known-removable mediatek null phantom unauthorized no-address malformed multiline cold cold-generic cold-failed; do
+        rm -rf "$box/bt"/* "$box/usb"/*
+        : > "$box/ops"; echo 'btusb 57344 0' > "$box/modules"
+        expected=1; probe=no; loaded=yes
+        case "$kind" in
+            absent) ;;
+            generic|cold-generic)
+                mkdir -p "$box/usb/dongle"
+                echo 0bda > "$box/usb/dongle/idVendor"
+                echo b85b > "$box/usb/dongle/idProduct"
+                echo e0 > "$box/usb/dongle/bDeviceClass" ;;
+            *)
+                mkdir -p "$box/usb/radio"
+                echo 1286 > "$box/usb/radio/idVendor"
+                echo 2059 > "$box/usb/radio/idProduct"
+                echo e0 > "$box/usb/radio/bDeviceClass" ;;
+        esac
+        case "$kind" in
+            known-fixed) echo fixed > "$box/usb/radio/removable" ;;
+            known-removable) echo removable > "$box/usb/radio/removable" ;;
+            mediatek) echo 0e8d > "$box/usb/radio/idVendor"; echo 0608 > "$box/usb/radio/idProduct" ;;
+            valid|null|phantom|unauthorized|no-address|malformed|multiline)
+                mkdir -p "$box/bt/hci0/device"
+                echo A0:B1:C2:D3:E4:F5 > "$box/bt/hci0/address"
+                echo 00 > "$box/bt/hci0/device/bInterfaceNumber"
+                echo 1 > "$box/bt/hci0/device/authorized"
+                case "$kind" in
+                    valid) expected=0 ;;
+                    null) echo 00:00:00:00:00:00 > "$box/bt/hci0/address" ;;
+                    phantom) echo 02 > "$box/bt/hci0/device/bInterfaceNumber" ;;
+                    unauthorized) echo 0 > "$box/bt/hci0/device/authorized" ;;
+                    no-address) rm "$box/bt/hci0/address" ;;
+                    malformed) echo nonsense > "$box/bt/hci0/address" ;;
+                    multiline) printf 'A0:B1:C2:D3:E4:F5\ninvalid\n' > "$box/bt/hci0/address" ;;
+                esac ;;
+            cold|cold-generic) : > "$box/modules"; expected=0; probe=yes ;;
+            cold-failed) : > "$box/modules"; probe=yes ;;
+        esac
+        rc=0
+        OP_LOG="$box/ops" MAKE_HCI="$([ "$expected" -eq 0 ] && echo yes || echo no)" \
+        PS5_SYS_BLUETOOTH_DIR="$box/bt" PS5_SYS_USB_DIR="$box/usb" PS5_PROC_MODULES="$box/modules" \
+        PATH="$box/bin:$PATH" "$loader" > "$box/output" 2>&1 || rc=$?
+        if [ "$rc" -eq "$expected" ] && ! grep -q 'modprobe -r' "$box/ops" && \
+           grep -qx 'rfkill unblock bluetooth' "$box/ops" && \
+           { { [ "$probe" = yes ] && grep -qx 'modprobe btusb' "$box/ops"; } || \
+             { [ "$probe" = no ] && ! grep -q '^modprobe ' "$box/ops"; }; }; then
+            say_pass "Loader $kind: exit=$expected, comandi probe/reload verificati"
+        else
+            say_fail "Loader $kind: exit=$rc (atteso $expected), comandi: $(cat "$box/ops")"
+        fi
+    done
 }
 
 test_dualsense_pair_scenarios() {
     source "$REPO_DIR/lib/core/common.sh"
     source "$REPO_DIR/lib/modules/bluetooth.sh"
-
-    export PS5_PAIR_TIMEOUT=2
-    local pair_helper="$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
-    if [ ! -x "$pair_helper" ]; then
-        module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
-    fi
-    [ -x "$pair_helper" ] || { say_fail "ps5-dualsense-pair non presente o non eseguibile"; return 1; }
-
-    local test_sandbox="$SANDBOX_DIR/bt_pair_test"
-    rm -rf "$test_sandbox"
-    mkdir -p "$test_sandbox/bin" "$test_sandbox/proc" "$test_sandbox/sys_input"
-
-    # Mock bluetoothctl
-    local btctl_mock="$test_sandbox/bin/bluetoothctl"
-    local btctl_log="$test_sandbox/btctl.log"
-
-    cat << 'EOF' > "$btctl_mock"
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    local helper="$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
+    local box="$SANDBOX_DIR/pair" kind rc expected commands target state devices
+    mkdir -p "$box/bin" "$box/sys"
+    cat > "$box/bin/bluetoothctl" <<'EOF'
 #!/bin/sh
-echo "btctl $*" >> "$BTCTL_LOG"
+echo "ctl $*" >> "$BTCTL_LOG"
 case "$1" in
-    power|pairable)
-        exit 0
-        ;;
-    show)
-        echo "Pairable: yes"
-        exit 0
-        ;;
-    --timeout)
-        exit 0
-        ;;
+    show) echo 'Pairable: yes' ;;
     devices)
-        if [ "$BTCTL_FOUND_DEVICE" = "1" ]; then
-            echo "Device 04:A3:43:11:22:33 Wireless Controller"
-        elif [ "$BTCTL_FOUND_DEVICE" = "multi" ]; then
-            echo "Device 04:A3:43:11:22:33 Wireless Controller"
-            echo "Device 04:A3:43:44:55:66 Wireless Controller"
-        fi
-        exit 0
-        ;;
+        case "$TEST_DEVICES" in
+            none) ;;
+            invalid) echo 'Device not-a-mac Wireless Controller' ;;
+            wrong-name) echo 'Device 04:A3:43:11:22:33 Keyboard' ;;
+            multi) printf 'Device 04:A3:43:11:22:33 Wireless Controller\nDevice 04:A3:43:44:55:66 DualSense Wireless Controller\n' ;;
+            *) echo 'Device 04:A3:43:11:22:33 Wireless Controller' ;;
+        esac ;;
     info)
-        target="$2"
-        if [ "$BTCTL_PAIR_FAIL" = "1" ]; then
-            echo "Device $target"
-            echo "Paired: no"
-            echo "Trusted: no"
-        elif [ "$BTCTL_PAIR_FAIL" = "target_only" ]; then
-            if [ "$target" = "04:A3:43:11:22:33" ]; then
-                echo "Device $target"
-                echo "Paired: yes"
-                echo "Trusted: yes"
-                [ "$BTCTL_CONNECTED" = "1" ] && echo "Connected: yes"
-            else
-                echo "Device $target"
-                echo "Paired: no"
-                echo "Trusted: no"
-            fi
-        else
-            echo "Device $target"
-            echo "Paired: yes"
-            echo "Trusted: yes"
-            if [ "$BTCTL_CONNECTED" = "1" ]; then
-                echo "Connected: yes"
-            fi
-        fi
-        exit 0
-        ;;
-    trust|connect)
-        exit 0
-        ;;
-    *)
-        while read -r line; do
-            echo "pipe: $line" >> "$BTCTL_LOG"
-        done
-        exit 0
-        ;;
+        echo "Device $2 Wireless Controller"
+        if [ "$TEST_STATE" = unpaired ] || [ "$TEST_STATE" = trust-only ]; then echo 'Paired: no'; else echo 'Paired: yes'; fi
+        if [ "$TEST_STATE" = untrusted ] || [ "$TEST_STATE" = unpaired ]; then echo 'Trusted: no'; else echo 'Trusted: yes'; fi
+        if [ "$TEST_STATE" = disconnected ]; then echo 'Connected: no'; else echo 'Connected: yes'; fi ;;
+    '') while IFS= read -r line; do echo "pipe $line" >> "$BTCTL_LOG"; done ;;
+    *) ;;
 esac
 EOF
-    chmod +x "$btctl_mock"
+    printf '#!/bin/sh\nexit 0\n' > "$box/bin/sleep"
+    chmod +x "$box/bin/"*
+    # Proc and sys fixtures are deliberately independent: no host input can satisfy a case.
+    for kind in proc-ok proc-phys sys-ok sys-link proc-no-event wrong-event wrong-mac irrelevant-field suffix-mac contradictory-uniq cross-record sys-parent sys-wrong-event missing both-incomplete untrusted trust-only disconnected zero multi-unpaired multi-paired override override-lower override-unknown override-malformed override-multiline override-wrong-name invalid-candidate invalid-timeout; do
+        rm -rf "$box/sys"/*
+        : > "$box/proc"; : > "$box/ops"
+        expected=1; commands=yes; target=''; state=good; devices=single
+        printf 'U: Uniq=04:a3:43:11:22:33\nH: Handlers=event4 js0\n' > "$box/proc"
+        case "$kind" in
+            proc-ok) expected=0 ;;
+            proc-phys) printf 'P: Phys=04:a3:43:11:22:33\nH: Handlers=event4\n' > "$box/proc"; expected=0 ;;
+            sys-ok|sys-link)
+                : > "$box/proc"
+                mkdir -p "$box/sys/input10/event10"
+                echo 04:a3:43:11:22:33 > "$box/sys/input10/uniq"
+                ln -s .. "$box/sys/input10/event10/device"
+                if [ "$kind" = sys-link ]; then
+                    mv "$box/sys/input10" "$box/real-input10"
+                    ln -s "$box/real-input10" "$box/sys/input10"
+                fi
+                expected=0 ;;
+            proc-no-event) echo 'U: Uniq=04:a3:43:11:22:33' > "$box/proc" ;;
+            wrong-event) printf 'U: Uniq=04:a3:43:11:22:33\nH: Handlers=js0\n\nU: Uniq=ff:ee:dd:cc:bb:aa\nH: Handlers=event9\n' > "$box/proc" ;;
+            wrong-mac) printf 'U: Uniq=ff:ee:dd:cc:bb:aa\nH: Handlers=event9\n' > "$box/proc" ;;
+            irrelevant-field) printf 'N: Name="04:a3:43:11:22:33"\nH: Handlers=event9\n' > "$box/proc" ;;
+            suffix-mac) printf 'U: Uniq=04:a3:43:11:22:33-extra\nH: Handlers=event9\n' > "$box/proc" ;;
+            contradictory-uniq) printf 'P: Phys=04:a3:43:11:22:33\nU: Uniq=ff:ee:dd:cc:bb:aa\nH: Handlers=event9\n' > "$box/proc" ;;
+            cross-record) printf 'U: Uniq=04:a3:43:11:22:33\n\nH: Handlers=event9\n' > "$box/proc" ;;
+            sys-parent)
+                : > "$box/proc"; mkdir -p "$box/sys/input10/device" "$box/sys/input10/event10"
+                echo 04:a3:43:11:22:33 > "$box/sys/input10/device/uniq" ;;
+            sys-wrong-event)
+                : > "$box/proc"; mkdir -p "$box/sys/input10" "$box/sys/input11/event11"
+                echo 04:a3:43:11:22:33 > "$box/sys/input10/uniq"
+                echo ff:ee:dd:cc:bb:aa > "$box/sys/input11/uniq" ;;
+            missing) rm "$box/proc" ;;
+            both-incomplete) : > "$box/proc"; mkdir -p "$box/sys/input10" ;;
+            untrusted) state=untrusted ;;
+            trust-only) state=trust-only ;;
+            disconnected) state=disconnected ;;
+            zero) devices=none; commands=no ;;
+            multi-unpaired) devices=multi; state=unpaired; commands=no ;;
+            multi-paired) devices=multi; commands=no ;;
+            override) devices=multi; target=04:A3:43:11:22:33; expected=0 ;;
+            override-lower) target=04:a3:43:11:22:33; expected=0 ;;
+            override-unknown) target=04:A3:43:00:00:00; commands=no ;;
+            override-malformed) target='bad.*mac'; commands=no ;;
+            override-multiline) target=$(printf '04:A3:43:11:22:33\nconnect 04:A3:43:44:55:66'); commands=no ;;
+            override-wrong-name) devices=wrong-name; target=04:A3:43:11:22:33; commands=no ;;
+            invalid-candidate) devices=invalid; commands=no ;;
+            invalid-timeout) commands=no ;;
+        esac
+        rc=0
+        BTCTL_LOG="$box/ops" TEST_DEVICES="$devices" TEST_STATE="$state" \
+        DUALSENSE_TARGET_MAC="$target" PS5_PAIR_TIMEOUT="$([ "$kind" = invalid-timeout ] && echo invalid || echo 2)" \
+        PS5_PROC_INPUT_DEVICES="$box/proc" PS5_SYS_INPUT_DIR="$box/sys" \
+        PATH="$box/bin:$PATH" "$helper" </dev/null > "$box/output" 2>&1 || rc=$?
+        if [ "$rc" -eq "$expected" ] && \
+           { { [ "$commands" = no ] && ! grep -Eq '^(ctl|pipe) (pair|trust|connect) ' "$box/ops"; } || \
+             { [ "$commands" = yes ] && grep -qx 'pipe pair 04:A3:43:11:22:33' "$box/ops"; }; } && \
+           ! grep -Eq '^(ctl|pipe) (pair|trust|connect) 04:A3:43:44:55:66' "$box/ops" && \
+           { [ "$kind" != override-multiline ] || [ ! -s "$box/ops" ]; } && \
+           { [ "$kind" != disconnected ] || grep -qx 'ctl connect 04:A3:43:11:22:33' "$box/ops"; }; then
+            say_pass "Pair $kind: exit=$expected e MAC/comandi verificati"
+        else
+            say_fail "Pair $kind: exit=$rc (atteso $expected); $(cat "$box/output"); $(cat "$box/ops")"
+        fi
+        rm -rf "$box/real-input10"
+    done
+    # A real pseudo-terminal exercises -t/read and EOF, rather than bypassing the menu.
+    for kind in valid alpha zero range empty eof huge; do
+        local choice
+        case "$kind" in
+            valid) choice=1; expected=0 ;;
+            alpha) choice=abc; expected=1 ;;
+            zero) choice=0; expected=1 ;;
+            range) choice=3; expected=1 ;;
+            empty) choice=''; expected=1 ;;
+            eof) choice=EOF; expected=1 ;;
+            huge) choice=9999999999999999999999; expected=1 ;;
+        esac
+        printf 'U: Uniq=04:a3:43:11:22:33\nH: Handlers=event4\n' > "$box/proc"
+        : > "$box/ops"; rc=0
+        BTCTL_LOG="$box/ops" TEST_DEVICES=multi TEST_STATE=good DUALSENSE_TARGET_MAC='' \
+        PS5_PAIR_TIMEOUT=2 PS5_PROC_INPUT_DEVICES="$box/proc" PS5_SYS_INPUT_DIR="$box/sys" \
+        PATH="$box/bin:$PATH" python3 - "$helper" "$choice" > "$box/output" 2>&1 <<'PY' || rc=$?
+import os, subprocess, sys
+master, slave = os.openpty()
+try:
+    child = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    os.close(slave)
+    os.write(master, b'\x04' if sys.argv[2] == 'EOF' else (sys.argv[2]+'\n').encode())
+    try:
+        output, _ = child.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.communicate()
+        raise
+    sys.stdout.buffer.write(output)
+    sys.exit(child.returncode)
+finally:
+    os.close(master)
+PY
+        if [ "$rc" -eq "$expected" ] && \
+           { { [ "$kind" = valid ] && grep -qx 'pipe pair 04:A3:43:11:22:33' "$box/ops"; } || \
+             { [ "$kind" != valid ] && ! grep -Eq '^(ctl|pipe) (pair|trust|connect) ' "$box/ops"; }; }; then
+            say_pass "Pair menu $kind: exit=$expected e comandi verificati su PTY"
+        else
+            say_fail "Pair menu $kind: exit=$rc atteso=$expected; $(cat "$box/output"); $(cat "$box/ops")"
+        fi
+    done
+}
 
-    # Scenario P1: assenza di bluetoothctl -> restituisce errore immediato
-    local rc_p1=0
-    PATH="/usr/empty/nonexistent" "$pair_helper" >/dev/null 2>&1 || rc_p1=$?
-    if [ "$rc_p1" -ne 0 ]; then
-        say_pass "Pair assistant scenario 1: assenza bluetoothctl restituisce errore immediato"
+test_bluetooth_idempotency() {
+    source "$REPO_DIR/lib/core/common.sh"
+    source "$REPO_DIR/lib/modules/bluetooth.sh"
+    mkdir -p "$MOCK_ROOT/etc/bluetooth"
+    printf '[General]\nName=Keep My Adapter\nPairableTimeout=90\n\n[Policy]\nAutoEnable=false\n\n[Custom]\nAutoEnable=preserve\nMarker=preserve\n' > "$MOCK_ROOT/etc/bluetooth/main.conf"
+    printf '[General]\nUserspaceHID=true\nIdleTimeout=37\n\n[Custom]\nMarker=preserve\n' > "$MOCK_ROOT/etc/bluetooth/input.conf"
+    local before after
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    before=$(find "$MOCK_ROOT" -type f -not -path "*/var/log/*" -print0 | sort -z | xargs -0 sha256sum)
+    module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    after=$(find "$MOCK_ROOT" -type f -not -path "*/var/log/*" -print0 | sort -z | xargs -0 sha256sum)
+    if [ "$before" = "$after" ] && \
+       grep -qx 'Name=Keep My Adapter' "$MOCK_ROOT/etc/bluetooth/main.conf" && \
+       grep -qx 'Marker=preserve' "$MOCK_ROOT/etc/bluetooth/main.conf" && \
+       grep -qx 'AutoEnable=preserve' "$MOCK_ROOT/etc/bluetooth/main.conf" && \
+       grep -qx 'IdleTimeout=37' "$MOCK_ROOT/etc/bluetooth/input.conf" && \
+       [ "$(grep -c '^UserspaceHID=false$' "$MOCK_ROOT/etc/bluetooth/input.conf")" -eq 1 ] && \
+       [ -L "$MOCK_ROOT/etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service" ]; then
+        say_pass 'Bluetooth installato due volte: file identici, symlink e configurazioni estranee preservati'
     else
-        say_fail "Pair assistant scenario 1: non ha rilevato l'assenza di bluetoothctl"
-    fi
-
-    # Scenario P2: nessun controller DualSense rilevato durante la scansione -> errore
-    local rc_p2=0
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=0 \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p2=$?
-    if [ "$rc_p2" -ne 0 ]; then
-        say_pass "Pair assistant scenario 2: nessun controller rilevato restituisce errore esplicito"
-    else
-        say_fail "Pair assistant scenario 2: ha dichiarato successo con zero controller rilevati"
-    fi
-
-    # Scenario P3: controller associato (Paired: yes) ma NESSUN device di input creato nel kernel -> DEVE fallire (exit != 0)
-    # Verifica che il tool non dichiari falso successo quando manca il device di input kernel!
-    local rc_p3=0
-    : > "$test_sandbox/proc/input_devices"
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p3=$?
-
-    if [ "$rc_p3" -ne 0 ]; then
-        say_pass "Pair assistant scenario 3: controller associato ma privo di input device kernel fallisce (evitato falso successo)"
-    else
-        say_fail "Pair assistant scenario 3: ha dichiarato falso successo senza input device kernel presente"
-    fi
-
-    # Scenario P3b: presenza di un ALTRO controller DualSense preesistente nel sistema (MAC A: 00:11:22:33:44:55)
-    # mentre stiamo associando il controller B (04:A3:43:11:22:33) il cui input device non è ancora stato creato.
-    # Verifica che il tool scarti il blocco di MAC A ed eviti qualsiasi falso successo multi-controller!
-    local rc_p3b=0
-    cat << 'EOF' > "$test_sandbox/proc/input_devices"
-I: Bus=0005 Vendor=054c Product=0ce6 Version=0000
-N: Name="DualSense Wireless Controller"
-P: Phys=00:11:22:33:44:55
-S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0001/input/input2
-U: Uniq=00:11:22:33:44:55
-H: Handlers=event2 js0
-B: PROP=0
-EOF
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p3b=$?
-
-    if [ "$rc_p3b" -ne 0 ]; then
-        say_pass "Pair assistant scenario 3b: presenza di controller preesistente con MAC diverso non genera falso successo"
-    else
-        say_fail "Pair assistant scenario 3b: falso successo generato da altro controller DualSense presente nel sistema"
-    fi
-
-    # Scenario P4: controller associato, fidato e input device kernel corrispondente presente -> SUCCESSO (exit 0)
-    local rc_p4=0
-    cat << 'EOF' >> "$test_sandbox/proc/input_devices"
-
-I: Bus=0005 Vendor=054c Product=0ce6 Version=0000
-N: Name="DualSense Wireless Controller"
-P: Phys=00:11:22:33:44:55
-S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0002/input/input4
-U: Uniq=04:a3:43:11:22:33
-H: Handlers=event4 js1
-B: PROP=0
-EOF
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p4=$?
-
-    if [ "$rc_p4" -eq 0 ]; then
-        say_pass "Pair assistant scenario 4: controller associato e input device kernel convalidati con successo (exit 0)"
-    else
-        say_fail "Pair assistant scenario 4: fallita validazione con controller e input device validi"
-    fi
-
-    # Scenario P5a: candidati multipli non associati in modalità non interattiva senza target esplicito -> errore deterministico
-    local rc_p5a=0
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=multi BTCTL_PAIR_FAIL=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" </dev/null >/dev/null 2>&1 || rc_p5a=$?
-
-    if [ "$rc_p5a" -ne 0 ]; then
-        say_pass "Pair assistant scenario 5a: controller multipli non associati senza override esplicito restituiscono errore"
-    else
-        say_fail "Pair assistant scenario 5a: esecuzione non interattiva ambigua non ha restituito errore"
-    fi
-
-    # Scenario P5b: candidati multipli non associati con DUALSENSE_TARGET_MAC esplicito -> risoluzione e successo
-    local rc_p5b=0
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=multi BTCTL_PAIR_FAIL=target_only BTCTL_CONNECTED=1 \
-    DUALSENSE_TARGET_MAC="04:A3:43:11:22:33" \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" </dev/null >/dev/null 2>&1 || rc_p5b=$?
-
-    if [ "$rc_p5b" -eq 0 ]; then
-        say_pass "Pair assistant scenario 5b: override DUALSENSE_TARGET_MAC seleziona e associa correttamente il target"
-    else
-        say_fail "Pair assistant scenario 5b: fallita selezione target con DUALSENSE_TARGET_MAC"
-    fi
-
-    # Scenario P6a: validazione input device via gerarchia sysfs (input*/device/uniq con event* figlio dedicato)
-    local rc_p6a=0
-    rm -rf "$test_sandbox/sys_input"/*
-    mkdir -p "$test_sandbox/sys_input/input10/device"
-    echo "04:a3:43:11:22:33" > "$test_sandbox/sys_input/input10/device/uniq"
-    mkdir -p "$test_sandbox/sys_input/input10/event10"
-    : > "$test_sandbox/proc/input_devices" # Procfs vuoto: forza fallback rigoroso su sysfs
-
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    DUALSENSE_TARGET_MAC="" \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p6a=$?
-
-    if [ "$rc_p6a" -eq 0 ]; then
-        say_pass "Pair assistant scenario 6a: riconoscimento input device gerarchico via sysfs convalidato"
-    else
-        say_fail "Pair assistant scenario 6a: mancato riconoscimento gerarchico su sysfs"
-    fi
-
-    # Scenario P6b: sysfs con uniq corrispondente ma SENZA handler event* figlio -> fallimento (exit != 0)
-    local rc_p6b=0
-    rm -rf "$test_sandbox/sys_input/input10/event10"
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p6b=$?
-
-    if [ "$rc_p6b" -ne 0 ]; then
-        say_pass "Pair assistant scenario 6b: sysfs con nodo input senza handler event* figlio rifiutato (exit != 0)"
-    else
-        say_fail "Pair assistant scenario 6b: falso successo con nodo input privo di handler event*"
-    fi
-
-    # Scenario P6c: sysfs event*/device/uniq corrispondente a MAC estraneo -> fallimento (exit != 0)
-    local rc_p6c=0
-    rm -rf "$test_sandbox/sys_input"/*
-    mkdir -p "$test_sandbox/sys_input/event99/device"
-    echo "ff:ee:dd:cc:bb:aa" > "$test_sandbox/sys_input/event99/device/uniq"
-    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
-    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
-    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
-    PATH="$test_sandbox/bin:$PATH" \
-    "$pair_helper" >/dev/null 2>&1 || rc_p6c=$?
-
-    if [ "$rc_p6c" -ne 0 ]; then
-        say_pass "Pair assistant scenario 6c: sysfs con MAC estraneo rifiutato correttamente (exit != 0)"
-    else
-        say_fail "Pair assistant scenario 6c: falso successo con handler event sysfs estraneo"
+        say_fail 'Bluetooth non idempotente o configurazione estranea alterata'
     fi
 }
 
@@ -2385,6 +2030,7 @@ run_test test_module_wifi_stage_unit
 run_test test_module_bluetooth
 run_test test_bluetooth_loader_scenarios
 run_test test_dualsense_pair_scenarios
+run_test test_bluetooth_idempotency
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope

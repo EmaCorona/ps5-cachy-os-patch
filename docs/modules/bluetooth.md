@@ -1,84 +1,88 @@
 # Modulo `bluetooth`
 
-> [!NOTE]
-> Sorgente: [`lib/modules/bluetooth.sh`](../../lib/modules/bluetooth.sh). Il modulo gestisce la disabilitazione del reset HCI in fase di probe del driver `btusb`, la configurazione nativa di BlueZ (`AutoEnable=true`, `JustWorksRepairing=always`, `PairableTimeout=0`), il supporto al driver kernel HID DualSense (`UserspaceHID=false`, precaricamento moduli `hidp` e `hid-playstation`), la prevenzione udev del doppio binding USB sull'interfaccia 02, il servizio loader resiliente pre-BlueZ (`ps5-bluetooth-firmware.service`) con finestra di assestamento bus xHCI e filtro dei controller fantasma, il tool di accoppiamento DualSense (`ps5-dualsense-pair`) e il tool diagnostico dedicato (`ps5-bt-diag`) per console PlayStation 5 (APU Oberon, Southbridge Salina).
+Sorgente: [`lib/modules/bluetooth.sh`](../../lib/modules/bluetooth.sh).
 
-## Obiettivo
+Il modulo prepara un rootfs CachyOS; non prova la radio fisica durante l'installazione.
+Configura `options btusb reset=0`, precarica `hidp` e `hid-playstation` e imposta
+`UserspaceHID=false` nella sezione General di input.conf. In main.conf imposta
+General: `JustWorksRepairing=always`, `PairableTimeout=0`, `FastConnectable=true`;
+Policy: `AutoEnable=true`. Aggiorna solo queste chiavi nelle sezioni indicate,
+preserva le altre impostazioni ed elimina duplicati delle chiavi gestite.
+Queste policy agevolano l'associazione, ma non dimostrano persistenza del bond.
 
-Assicurare l'inizializzazione corretta del firmware e l'abilitazione affidabile del controller Bluetooth PS5:
-1. **Evitare stalli xHCI durante il probe (`options btusb reset=0`)**: disabilita l'invio del comando HCI Reset durante l'inizializzazione del modulo `btusb`, prevenendo reset loop e timeout di negoziazione sul controller USB xHCI del Southbridge Salina.
-2. **Abilitazione automatica e persistenza pairing BlueZ**: configura `/etc/bluetooth/main.conf` con `AutoEnable=true`, `JustWorksRepairing=always`, `PairableTimeout=0` e `FastConnectable=true`. Questo assicura che il controller DualSense mantenga l'associazione crittografica (evitando cancellazioni del bond o errori di autenticazione al riavvio) e garantisce che lo stato associabile non scada (l'impostazione esplicita `PairableTimeout=0` agisce come misura difensiva contro eventuali override di distribuzione che potrebbero imporre un timeout di pairing).
-3. **Integrazione Kernel HID nativa (`UserspaceHID=false`)**: disabilita forzatamente `UserspaceHID` in `/etc/bluetooth/input.conf` e precarica i moduli `hidp` e `hid-playstation` in `/etc/modules-load.d/ps5-bluetooth.conf`. In questo modo il controller DualSense crea i nodi input standard (`/dev/input/js*`, `event*`) gestiti dal driver ufficiale del kernel, evitando che il pad rimanga connesso a livello Bluetooth ma muto per le applicazioni o Steam.
-4. **Prevenzione a monte del doppio binding USB (`60-ps5-bluetooth.rules`)**: impedisce via udev il binding del driver all'interfaccia secondaria `02` (USB 1.2) per chipset composite come Marvell `1286:2059`, eliminando alla radice la comparsa del controller fantasma HCI preservando l'endpoint primario `00`.
-5. **Loader resiliente pre-BlueZ (`ps5-bluetooth-firmware-loader`)**: verifica selettivamente l'hardware Bluetooth sul bus USB tramite match rigoroso sugli ID noti della radio interna PS5 (`1286:2059` Marvell Avastar per PS5 Fat/Digital, `0e8d:0608`/`0616`/`7922`/`7961` MediaTek per PS5 Slim e revisioni). Esclude volutamente dongle esterni generici e dispositivi contrassegnati come rimovibili dall'hub USB (`removable=="removable"`) per evitare reload distruttivi di `btusb` qualora la radio interna sia guasta o assente. Attende una finestra di assestamento xHCI (3s) e convalida la presenza di un controller valido (`is_valid_hci`) scartando controller fantasma su interfaccia 02, dispositivi deautorizzati (`authorized=0`), controller privi di MAC o con indirizzo nullo (`00:00:00:00:00:00`). Se un controller valido è già presente o l'hardware interno non è sul bus, evita scaricamenti distruttivi del modulo (`modprobe -r btusb`); il reload controllato è strettamente limitato al solo caso di radio interna confermata sul bus e assenza totale di adapter HCI validi dopo l'assestamento.
-6. **Assistente accoppiamento DualSense con verifica input kernel (`ps5-dualsense-pair`)**: script per accoppiare e registrare in modo permanente il DualSense (gestisce pairing agent, trust permanente, selezione deterministica con precedenza a `DUALSENSE_TARGET_MAC` o rilevamento automatico del singolo candidato non associato, ritentativo di connessione attiva in caso di distacco L2CAP e verifica stringente sia gerarchica in sysfs `/sys/class/input/input*/device/uniq` con nodo `event*` figlio dedicato, sia paragrafo-per-paragrafo in `/proc/bus/input/devices` con handler `event*` legato esclusivamente al MAC specifico del controller, escludendo falsi successi in configurazioni multi-pad ed emettendo errore esplicito in caso di mancata creazione dei nodi di input).
-7. **Tool diagnostico dedicato (`ps5-bt-diag`)**: raccoglie a video e salva in `/boot/efi/ps5-diag/bluetooth.txt` lo stato completo del kernel, USB IDs, sysfs, bluetoothctl, rfkill, unità systemd e dmesg.
+## Loader e protezione xHCI
 
-## Sequenza operativa
+`/usr/local/sbin/ps5-bluetooth-firmware-loader` sblocca rfkill e attende fino a tre
+secondi l'enumerazione. Un HCI valido deve avere un MAC sintatticamente valido e
+non nullo, letto da hciN/address. Alcuni kernel non espongono questo attributo:
+in quel caso il loader fallisce in sicurezza anche se la directory hciN esiste;
+la sola directory non dimostra un controller operativo. Verificare questo ABI sul
+kernel PS5 target. IF 02 e device deautorizzati sono esclusi. Un HCI valido consente exit 0
+senza invocare modprobe. Se manca HCI, presenza USB generica (classe e0 oppure ID
+1286:2059 o 0e8d:0608/0616/7922/7961) consente soltanto il normale
+`modprobe btusb` quando il modulo non è caricato. Dopo il caricamento si attende
+ancora fino a tre secondi e si restituisce successo solo con HCI valido.
 
-1. Convalida il mount della root CachyOS.
-2. Scrive `options btusb reset=0` in `/etc/modprobe.d/ps5-bluetooth.conf`.
-3. Configura il precaricamento di `hidp` e `hid-playstation` in `/etc/modules-load.d/ps5-bluetooth.conf`.
-4. Configura `AutoEnable=true`, `JustWorksRepairing=always`, `PairableTimeout=0` e `FastConnectable=true` in `/etc/bluetooth/main.conf`.
-5. Configura `UserspaceHID=false` in `/etc/bluetooth/input.conf`.
-6. Installa la regola udev `/etc/udev/rules.d/60-ps5-bluetooth.rules` per disabilitare l'interfaccia USB secondaria `02` sui controller Marvell `1286:2059`.
-7. Installa `/usr/local/sbin/ps5-bluetooth-firmware-loader` (eseguibile `0755`) con validazione `is_valid_hci`, finestra di assestamento bus, controllo hardware USB, filtro anti-phantom e tracciamento log.
-8. Installa `ps5-bluetooth-firmware.service`, unità `oneshot` ordinata prima di `bluetooth.service` ed associata a `bluetooth.target`:
-   ```ini
-   [Unit]
-   Description=PS5 Bluetooth Firmware Loader
-   DefaultDependencies=no
-   After=systemd-modules-load.service
-   Before=bluetooth.service
-   ConditionPathExists=/usr/lib/firmware
+**Questa versione non esegue mai `modprobe -r btusb`.** Non esiste ancora un profilo
+di topologia interna PS5 verificato fisicamente: `has_verified_internal_radio`
+restituisce sempre falso. VID/PID conosciuto, classe USB e `removable=fixed` non
+provano la posizione interna; attributi assenti, `fixed` e `removable` non
+abilitano il reload. Un modulo già caricato senza HCI valido produce exit 1 e
+una diagnosi, anche con ID noto. Non è disponibile un override per forzare il reload.
+Un futuro recupero richiederà un profilo hardware/topologia verificato sulla console,
+assenza di HCI dopo assestamento e nuove prove di sicurezza xHCI.
 
-   [Service]
-   Type=oneshot
-   RemainAfterExit=yes
-   ExecStart=/usr/local/sbin/ps5-bluetooth-firmware-loader
+La regola `60-ps5-bluetooth.rules` deautorizza IF 02 del Marvell 1286:2059;
+non dimostra che il dispositivo sia interno. Il servizio oneshot
+`ps5-bluetooth-firmware.service` segue `systemd-modules-load.service`, precede
+`bluetooth.service`, richiede `/usr/lib/firmware` ed è abilitato tramite
+`bluetooth.target.wants`. Non usa Restart: nessun ciclo automatico di recovery.
+Il normale avvio riesegue una verifica limitata, senza scaricare il modulo.
 
-   [Install]
-   WantedBy=bluetooth.target
-   ```
-9. Abilita il servizio mediante symlink in `/etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service`.
-10. Installa l'assistente `/usr/local/sbin/ps5-dualsense-pair` (eseguibile `0755`).
-11. Installa lo strumento diagnostico `/usr/local/sbin/ps5-bt-diag` (eseguibile `0755`).
-12. Bonifica e rimuove definitivamente eventuali residui dello script `ps5-bt-quiet` o dell'unità `ps5-bt-quiet.service` da `/etc/systemd/system/multi-user.target.wants/`.
+## Pairing verificato
 
-## File e unità generate
+Eseguire `sudo ps5-dualsense-pair` con DualSense in modalità pairing (CREATE + PS).
+`DUALSENSE_TARGET_MAC` deve essere un MAC valido presente nell'elenco BlueZ con nome
+compatibile Wireless Controller/DualSense. Il nome è un filtro operativo, non
+un'autenticazione crittografica del produttore. Un target già associato è ammesso.
+Per l'override con sudo usare, per esempio:
 
-| Percorso nella root di destinazione | Ruolo |
-| :--- | :--- |
-| `etc/modprobe.d/ps5-bluetooth.conf` | Disabilitazione HCI Reset all'inizializzazione del driver `btusb`. |
-| `etc/modules-load.d/ps5-bluetooth.conf` | Precaricamento automatico di `hidp` e `hid-playstation`. |
-| `etc/bluetooth/main.conf` | Policy `AutoEnable=true`, `JustWorksRepairing=always`, `PairableTimeout=0` e `FastConnectable=true`. |
-| `etc/bluetooth/input.conf` | `UserspaceHID=false` per delegare l'input del DualSense al driver kernel `hid-playstation`. |
-| `etc/udev/rules.d/60-ps5-bluetooth.rules` | Regola udev anti-double-bind per interfaccia secondaria `02` Marvell `1286:2059`. |
-| `usr/local/sbin/ps5-bluetooth-firmware-loader` | Helper di avvio sicuro pre-BlueZ con verifica presenza USB, filtro phantom e logging. |
-| `etc/systemd/system/ps5-bluetooth-firmware.service` | Unità systemd che invoca il loader firmware prima di `bluetooth.service`. |
-| `etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service` | Symlink di abilitazione in `bluetooth.target`. |
-| `usr/local/sbin/ps5-dualsense-pair` | Assistente interattivo per accoppiamento, trust e validazione DualSense. |
-| `usr/local/sbin/ps5-bt-diag` | Script di diagnostica hardware, driver, controller e log Bluetooth. |
-
-## Diagnostica su PS5
-
-Per analizzare lo stato completo del Bluetooth sulla PS5 avviata in CachyOS, eseguire:
-
-```bash
-sudo ps5-bt-diag
+```sh
+sudo env DUALSENSE_TARGET_MAC=AA:BB:CC:DD:EE:FF ps5-dualsense-pair
 ```
 
-Lo script stamperà a schermo e salverà il report dettagliato in `/boot/efi/ps5-diag/bluetooth.txt` (leggibile anche collegando il drive USB/NVMe a un PC).
+Senza override seleziona un solo candidato non associato, oppure l'unico candidato
+noto. Più candidati richiedono scelta interattiva numerica nel range; EOF e scelte
+errate falliscono. Senza terminale l'ambiguità produce errore.
 
-In alternativa, i singoli comandi di verifica manuale:
+Il successo richiede contemporaneamente `Paired: yes`, `Trusted: yes`, `Connected:
+yes` per il MAC selezionato e relativo handler input kernel. Procfs verifica
+`U: Uniq=` esatto (prioritario) oppure `P: Phys=` esatto se Uniq è vuoto e
+`H: Handlers=` contenente un token eventN nello stesso record. MAC in Name/Sysfs o
+altri campi non valgono. Sysfs richiede inputN/uniq esatto e un eventN figlio il cui
+link device torni allo stesso inputN. Non usa l'uniq del parent HID.
+Procfs valido funziona anche con sysfs assente; entrambi incompleti falliscono.
 
-```bash
-systemctl status ps5-bluetooth-firmware.service bluetooth.service
-journalctl -b -u ps5-bluetooth-firmware.service -u bluetooth.service --no-pager
-bluetoothctl list
-bluetoothctl show
-rfkill list bluetooth
-lsusb -nn
-```
+Il polling rivaluta lo stato corrente, ritenta trust/connessione e distingue
+pairing/trust incompleto, disconnessione e input kernel mancante.
+`PS5_PAIR_TIMEOUT` accetta 1–120 secondi (default 20) per la scadenza del polling,
+con anche un limite di tentativi. Ogni chiamata BlueZ dura al massimo 5 secondi;
+un tentativo già iniziato può superare la scadenza. Setup, scansione (10s, limite
+12s) e dialogo pairing (limite 15s) precedono il polling.
 
-Fonte primaria: [`lib/modules/bluetooth.sh`](../../lib/modules/bluetooth.sh).
+## File installati e diagnostica
+
+Oltre ai file descritti, installa `/usr/local/sbin/ps5-dualsense-pair` e
+`/usr/local/sbin/ps5-bt-diag` (0755). Rimuove i residui del precedente ps5-bt-quiet.
+`sudo ps5-bt-diag` stampa e salva in `/boot/efi/ps5-diag/bluetooth.txt` (o partizione
+boot montata) kernel, sysfs, BlueZ, USB tramite lsusb/lsusb -t, path canonici,
+ID, removable, authorized, devpath e busnum, rfkill, servizi e log.
+
+## Verifiche e limiti
+
+Suite riproducibile: `./tests/run-tests.sh`; CI usa run-all-tests.sh, che delega
+allo stesso runner. Vedere [scheda fix](../fix/fix-bluetooth-restore.md) per i
+risultati effettivi: suite locale corrente **149 superati, 0 falliti**. I mock verificano flussi e comandi, non la console fisica.
+Restano da provare su PS5: topologia interna e removable, pairing/input reale,
+riaccensione pad, riconnessione e reboot, più controller e assenza di errori o
+perdita di periferiche USB/xHCI. Il reload resta disabilitato finché manca tale evidenza.

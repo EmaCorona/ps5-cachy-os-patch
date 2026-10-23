@@ -156,7 +156,7 @@ Per monitorare in tempo reale temperature, regime e zona termica attiva da termi
 
 - **Wi-Fi interno e dongle USB**: `wifi` rileva il percorso hardware e prepara il firmware NXP IW620 (`nxp/pcieuartiw620_combo_v1.bin`) quando disponibile. Evita il driver PCIe `mt7921e`, considerato instabile sul target, distingue NXP da MediaTek e mantiene il supporto ai dongle USB. Il firmware corretto è necessario per caricare il driver NXP.
 
-- **Controller Bluetooth PS5**: il modulo `bluetooth` disabilita l'HCI reset in fase di probe del driver `btusb` (`btusb reset=0`) per evitare stalli sul controller xHCI Salina, imposta la policy nativa BlueZ `AutoEnable=true`, previene via udev il doppio binding USB sui chipset secondari (Marvell `1286:2059`), gestisce l'inizializzazione del driver pre-BlueZ tramite `ps5-bluetooth-firmware-loader` (evitando unload distruttivi quando il controller è già attivo) e mette a disposizione lo script diagnostico `ps5-bt-diag`.
+- **Controller Bluetooth PS5**: il modulo `bluetooth` disabilita l'HCI reset in fase di probe del driver `btusb` (`btusb reset=0`) per evitare stalli sul controller xHCI Salina, imposta la policy nativa BlueZ `AutoEnable=true`, previene via udev il doppio binding USB sui chipset secondari (Marvell `1286:2059`), gestisce l'inizializzazione del driver pre-BlueZ tramite `ps5-bluetooth-firmware-loader` (senza unload di btusb: identificazione interna ancora da validare su PS5) e mette a disposizione lo script diagnostico `ps5-bt-diag`.
 
 ---
 

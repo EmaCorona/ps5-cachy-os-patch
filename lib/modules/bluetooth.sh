@@ -7,6 +7,37 @@ module_bluetooth_info() {
     echo "Configurazione Bluetooth PS5 (reset=0 xHCI, loader resiliente pre-BlueZ, udev IF 02 anti-phantom, kernel HID DualSense, pairing policy e ps5-bt-diag)"
 }
 
+bluetooth_ini_set() {
+    local file="$1" section="$2" key="$3" value="$4" tmp
+    tmp=$(mktemp) || return 1
+    [ -e "$file" ] || sudo touch "$file" || { rm -f "$tmp"; return 1; }
+    if ! sudo awk -v section="$section" -v key="$key" -v value="$value" '
+        function flush() { if (inside && !written) { print key "=" value; written=1 } }
+        /^[[:space:]]*\[/ {
+            flush()
+            header=$0
+            gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", header)
+            inside=(header == section)
+            if (inside) seen=1
+        }
+        {
+            if (inside && $0 ~ "^[[:space:]#;]*" key "[[:space:]]*=") {
+                if (!written) { print key "=" value; written=1 }
+                next
+            }
+            print
+        }
+        END { flush(); if (!seen) print "\n[" section "]\n" key "=" value }
+    ' "${file:-/dev/null}" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    sudo install -m 0644 "$tmp" "$file"
+    local result=$?
+    rm -f "$tmp"
+    return "$result"
+}
+
 module_bluetooth_run() {
     local cachy_mnt="$1"
     local boot_mnt="$2"
@@ -37,87 +68,15 @@ hid-playstation
 EOF
     sudo chmod 0644 "${cachy_mnt}/etc/modules-load.d/ps5-bluetooth.conf"
 
-    # 3. Configura BlueZ (main.conf): AutoEnable=true, JustWorksRepairing=always, PairableTimeout=0, FastConnectable=true
+    # Update only the intended INI section; preserve unrelated keys/sections.
     sudo mkdir -p "${cachy_mnt}/etc/bluetooth"
     local main_conf="${cachy_mnt}/etc/bluetooth/main.conf"
-    if [ -f "$main_conf" ]; then
-        # Policy: AutoEnable=true
-        if grep -q "^\[Policy\]" "$main_conf"; then
-            if grep -q "^[#[:space:]]*AutoEnable=" "$main_conf"; then
-                sudo sed -i 's/^[#[:space:]]*AutoEnable=.*/AutoEnable=true/' "$main_conf"
-            else
-                sudo sed -i '/^\[Policy\]/a AutoEnable=true' "$main_conf"
-            fi
-        else
-            cat << 'EOF' | sudo tee -a "$main_conf" >/dev/null
-
-[Policy]
-AutoEnable=true
-EOF
-        fi
-
-        # General: JustWorksRepairing=always, PairableTimeout=0, FastConnectable=true
-        if grep -q "^\[General\]" "$main_conf"; then
-            if grep -q "^[#[:space:]]*JustWorksRepairing=" "$main_conf"; then
-                sudo sed -i 's/^[#[:space:]]*JustWorksRepairing=.*/JustWorksRepairing=always/' "$main_conf"
-            else
-                sudo sed -i '/^\[General\]/a JustWorksRepairing=always' "$main_conf"
-            fi
-            if grep -q "^[#[:space:]]*PairableTimeout=" "$main_conf"; then
-                sudo sed -i 's/^[#[:space:]]*PairableTimeout=.*/PairableTimeout=0/' "$main_conf"
-            else
-                sudo sed -i '/^\[General\]/a PairableTimeout=0' "$main_conf"
-            fi
-            if grep -q "^[#[:space:]]*FastConnectable=" "$main_conf"; then
-                sudo sed -i 's/^[#[:space:]]*FastConnectable=.*/FastConnectable=true/' "$main_conf"
-            else
-                sudo sed -i '/^\[General\]/a FastConnectable=true' "$main_conf"
-            fi
-        else
-            cat << 'EOF' | sudo tee -a "$main_conf" >/dev/null
-
-[General]
-JustWorksRepairing=always
-PairableTimeout=0
-FastConnectable=true
-EOF
-        fi
-    else
-        cat << 'EOF' | sudo tee "$main_conf" >/dev/null
-[General]
-JustWorksRepairing=always
-PairableTimeout=0
-FastConnectable=true
-
-[Policy]
-AutoEnable=true
-EOF
-    fi
-    sudo chmod 0644 "$main_conf"
-
-    # 4. Configura /etc/bluetooth/input.conf: UserspaceHID=false (fondamentale per consentire al driver kernel hid-playstation di creare i device input)
     local input_conf="${cachy_mnt}/etc/bluetooth/input.conf"
-    if [ -f "$input_conf" ]; then
-        if grep -q "^\[General\]" "$input_conf"; then
-            if grep -q "^[#[:space:]]*UserspaceHID=" "$input_conf"; then
-                sudo sed -i 's/^[#[:space:]]*UserspaceHID=.*/UserspaceHID=false/' "$input_conf"
-            else
-                sudo sed -i '/^\[General\]/a UserspaceHID=false' "$input_conf"
-            fi
-        else
-            cat << 'EOF' | sudo tee -a "$input_conf" >/dev/null
-
-[General]
-UserspaceHID=false
-EOF
-        fi
-    else
-        cat << 'EOF' | sudo tee "$input_conf" >/dev/null
-[General]
-UserspaceHID=false
-EOF
-    fi
-    sudo chmod 0644 "$input_conf"
+    bluetooth_ini_set "$main_conf" Policy AutoEnable true || return 1
+    bluetooth_ini_set "$main_conf" General JustWorksRepairing always || return 1
+    bluetooth_ini_set "$main_conf" General PairableTimeout 0 || return 1
+    bluetooth_ini_set "$main_conf" General FastConnectable true || return 1
+    bluetooth_ini_set "$input_conf" General UserspaceHID false || return 1
 
     # 5. Regola udev: previene il doppio binding USB deautorizzando l'interfaccia secondaria (02) per Marvell 1286:2059
     # NOTA: l'interfaccia 00 è l'endpoint HCI primario; l'interfaccia 01 è audio/telefonia;
@@ -157,6 +116,13 @@ is_valid_hci() {
             ;;
     esac
 
+    [ "${#addr}" -eq 17 ] || return 1
+    printf '%s\n' "$addr" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || return 1
+    if [ -f "$d/device/../authorized" ] &&
+       [ "$(cat "$d/device/../authorized" 2>/dev/null)" != "1" ]; then
+        return 1
+    fi
+
     # 2. Se collegato via USB, verifica autorizzazione e numero interfaccia
     if [ -d "$d/device" ]; then
         if [ -f "$d/device/authorized" ]; then
@@ -188,35 +154,30 @@ has_valid_hci() {
     return 1
 }
 
+# Generic presence permits only normal module loading, never module removal.
 has_bt_usb_hardware() {
     for dev in "$SYS_USB"/*; do
         [ -d "$dev" ] || continue
-        local vid="" pid="" removable=""
+        local vid="" pid="" klass=""
         [ -f "$dev/idVendor" ] && vid=$(cat "$dev/idVendor" 2>/dev/null)
         [ -f "$dev/idProduct" ] && pid=$(cat "$dev/idProduct" 2>/dev/null)
-        [ -f "$dev/removable" ] && removable=$(cat "$dev/removable" 2>/dev/null)
-
-        # Criterio di sicurezza fail-safe: se la periferica è contrassegnata come rimovibile ("removable")
-        # dal controller hub USB, viene scartata per evitare che dongle esterni collegati alle porte utente
-        # possano attivare un reload globale di btusb e destabilizzare il controller host xHCI Salina.
-        if [ "$removable" = "removable" ]; then
-            continue
-        fi
-
-        # Rilevamento circoscritto rigorosamente all'hardware Bluetooth interno noto di PlayStation 5:
-        # - Marvell Avastar 88W8997 (PS5 Fat/Digital CFI-10xx/11xx/12xx): 1286:2059
-        # - MediaTek MT7921U / MT7922 (PS5 Slim CFI-20xx e revisioni): 0e8d:0608, 0e8d:0616, 0e8d:7922, 0e8d:7961
-        if [ "$vid" = "1286" ] && [ "$pid" = "2059" ]; then
-            return 0
-        fi
-        if [ "$vid" = "0e8d" ]; then
-            case "$pid" in
-                0608|0616|7922|7961)
-                    return 0
-                    ;;
-            esac
-        fi
+        [ -f "$dev/bDeviceClass" ] && klass=$(cat "$dev/bDeviceClass" 2>/dev/null)
+        case "$vid:$pid" in
+            1286:2059|0e8d:0608|0e8d:0616|0e8d:7922|0e8d:7961) return 0 ;;
+        esac
+        [ "$klass" = "e0" ] && return 0
+        for interface in "$dev":*/bInterfaceClass; do
+            [ -f "$interface" ] || continue
+            [ "$(cat "$interface" 2>/dev/null)" = "e0" ] && return 0
+        done
     done
+    return 1
+}
+
+has_verified_internal_radio() {
+    # No PS5 topology profile has been verified on physical hardware yet.
+    # VID/PID and removable=fixed (or an absent attribute) cannot prove location.
+    # Keep recovery disabled until an independently validated topology is shipped.
     return 1
 }
 
@@ -250,17 +211,12 @@ if ! grep -q "^btusb " "$PROC_MOD" 2>/dev/null; then
         ps5_log bluetooth warn "Caricamento modulo btusb non riuscito."
     fi
 else
-    # btusb è in memoria ma nessun controller valido è apparso:
-    # tentativo controllato di ricaricamento (autorizzato poiché l'hardware USB è confermato presente sul bus)
-    ps5_log bluetooth warn "btusb presente in memoria ma nessun controller valido esposto: tentativo di ricaricamento controllato..."
-    sleep 1
-    modprobe -r btusb 2>/dev/null || true
-    sleep 1
-    if modprobe btusb; then
-        ps5_log bluetooth info "Ricaricamento modulo btusb completato."
-    else
-        ps5_log bluetooth error "Fallito ricaricamento di btusb durante il ripristino."
+    if ! has_verified_internal_radio; then
+        ps5_log bluetooth error "Radio interna PS5 non verificata: reload btusb disabilitato per proteggere xHCI (VID/PID e removable non provano la topologia)."
+        exit 1
     fi
+    # No destructive recovery is shipped without a physically verified profile.
+    exit 1
 fi
 
 # Attesa finale per la registrazione del controller dopo probe/reload
@@ -341,8 +297,18 @@ diag_content() {
     command -v bluetoothctl >/dev/null 2>&1 && timeout 5 bluetoothctl show 2>&1 || echo "bluetoothctl non disponibile o timeout"
     echo ""
     echo "--- 3. Dispositivi USB (lsusb) ---"
-    command -v lsusb >/dev/null 2>&1 && lsusb -nn 2>&1 || echo "lsusb non disponibile"
+    command -v lsusb >/dev/null 2>&1 && lsusb 2>&1
+    command -v lsusb >/dev/null 2>&1 && lsusb -t 2>&1 || echo "lsusb non disponibile"
     echo ""
+    echo "USB sysfs topology, IDs, authorization and removable:"
+    for usb in /sys/bus/usb/devices/*; do
+        [ -f "$usb/idVendor" ] || continue
+        readlink -f "$usb"
+        for attr in idVendor idProduct removable authorized devpath busnum; do
+            printf '%s=' "$attr"
+            cat "$usb/$attr" 2>/dev/null || echo "unavailable"
+        done
+    done
     echo "--- 4. Stato Radio (rfkill) ---"
     command -v rfkill >/dev/null 2>&1 && rfkill list bluetooth 2>&1 || echo "rfkill non disponibile"
     echo ""
@@ -370,242 +336,182 @@ EOF
     # 9. Helper dedicato per pairing DualSense verificato (ps5-dualsense-pair)
     cat << 'EOF' | sudo tee "${cachy_mnt}/usr/local/sbin/ps5-dualsense-pair" >/dev/null
 #!/bin/sh
-# ps5-dualsense-pair: procedura guidata per pairing permanente del DualSense su PS5 Linux
+# ps5-dualsense-pair: verifica il target BlueZ e il relativo input kernel.
 [ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
-if ! command -v bluetoothctl >/dev/null 2>&1; then
-    echo "Errore: bluetoothctl non trovato nel sistema."
-    exit 1
+valid_mac() {
+    [ "${#1}" -eq 17 ] || return 1
+    printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$'
+}
+fail() { echo "ERRORE: $*"; exit 1; }
+
+# Validare override e timeout prima di qualsiasi comando BlueZ.
+if [ -n "${DUALSENSE_TARGET_MAC:-}" ]; then
+    valid_mac "$DUALSENSE_TARGET_MAC" || fail "DUALSENSE_TARGET_MAC non è un MAC valido."
+    DUALSENSE_TARGET_MAC=$(printf '%s' "$DUALSENSE_TARGET_MAC" | tr '[:lower:]' '[:upper:]')
 fi
+PAIR_TIMEOUT=${PS5_PAIR_TIMEOUT:-20}
+case "$PAIR_TIMEOUT" in ''|*[!0-9]*) fail "Timeout pairing non valido (1-120 secondi).";; esac
+[ "${#PAIR_TIMEOUT}" -le 3 ] && [ "$PAIR_TIMEOUT" -ge 1 ] && [ "$PAIR_TIMEOUT" -le 120 ] || fail "Timeout pairing non valido (1-120 secondi)."
+command -v bluetoothctl >/dev/null 2>&1 || fail "bluetoothctl non trovato nel sistema."
+command -v timeout >/dev/null 2>&1 || fail "timeout non trovato nel sistema."
+bt() { timeout 5 bluetoothctl "$@"; }
 
-echo "=================================================================="
-echo "    PS5 DualSense Bluetooth Pairing Assistant"
-echo "=================================================================="
-echo "1. Assicurati che il controller DualSense sia spento."
-echo "2. Tieni premuti contemporaneamente i tasti [CREATE/SHARE] + [PS]"
-echo "   fino a quando la barra luminosa inizia a lampeggiare rapidamente a doppio impulso."
-echo "=================================================================="
-echo ""
-
-# Assicura adapter alimentato e pairable senza timeout
-bluetoothctl power on >/dev/null 2>&1
+echo "PS5 DualSense Bluetooth Pairing Assistant"
+echo "Tieni premuti [CREATE/SHARE] + [PS] sul controller spento fino al doppio lampeggio."
+bt power on >/dev/null 2>&1
 PAIRABLE_OK=0
 for _ in $(seq 1 15); do
-    bluetoothctl pairable on >/dev/null 2>&1
-    if bluetoothctl show 2>/dev/null | grep -q "Pairable: yes"; then
+    bt pairable on >/dev/null 2>&1
+    if bt show 2>/dev/null | grep -Eq '^[[:space:]]*Pairable: yes[[:space:]]*$'; then
         PAIRABLE_OK=1
         break
     fi
     sleep 1
 done
+[ "$PAIRABLE_OK" -eq 1 ] || fail "Adapter Bluetooth non associabile."
+echo "Ricerca del controller (scansione 10s)..."
+timeout 12 bluetoothctl --timeout 10 scan on >/dev/null 2>&1 || true
 
-if [ "$PAIRABLE_OK" -eq 0 ]; then
-    echo "Attenzione: adapter Bluetooth occupato. Attendi qualche secondo e riprova."
-    exit 1
-fi
+# Il MAC deve provenire da una riga Device con nome compatibile, non da
+# una sottostringa in un campo arbitrario. Il nome non autentica il dispositivo.
+CANDIDATES=$(bt devices 2>/dev/null | awk '
+    $1 == "Device" {
+        name = $0; sub(/^[^ ]+ +[^ ]+ +/, "", name)
+        if (name == "Wireless Controller" || name ~ /^DualSense( Wireless Controller)?( Edge)?$/)
+            print toupper($2)
+    }' | while IFS= read -r candidate; do
+        valid_mac "$candidate" && printf '%s\n' "$candidate"
+    done | sort -u)
+[ -n "$CANDIDATES" ] || fail "Nessun controller DualSense rilevato."
 
-echo "Ricerca del controller in corso (scansione 10s)..."
-bluetoothctl --timeout 10 scan on >/dev/null 2>&1 || true
-
-# Rilevamento deterministico del target tra controller multipli
-CANDIDATES=$(bluetoothctl devices 2>/dev/null | grep -iE "Wireless Controller|DualSense" | awk '{print $2}')
-
-if [ -z "$CANDIDATES" ]; then
-    echo "Nessun controller DualSense rilevato. Assicurati che sia in pairing mode e riesegui."
-    exit 1
-fi
-
-# Filtra candidati non ancora associati (in attesa di pairing)
-UNPAIRED=""
-for c in $CANDIDATES; do
-    if ! bluetoothctl info "$c" 2>/dev/null | grep -q "Paired: yes"; then
-        UNPAIRED="$UNPAIRED $c"
-    fi
-done
-
-# Selezione deterministica del target:
-# 1. Se fornito esplicitamente tramite variabile d'ambiente, usa direttamente il target specificato
-# 2. Se è presente esattamente un controller non associato (nuovo), selezionalo automaticamente
-# 3. Se ci sono più controller non associati, chiedi conferma interattiva o richiedi override
-# 4. Se tutti i controller sono già noti, consenti il re-pairing del singolo controller o selezione interattiva
 MAC=""
-unpaired_count=$(echo "$UNPAIRED" | wc -w)
-total_count=$(echo "$CANDIDATES" | wc -w)
-
 if [ -n "${DUALSENSE_TARGET_MAC:-}" ]; then
-    MAC="$DUALSENSE_TARGET_MAC"
-elif [ "$unpaired_count" -eq 1 ]; then
-    # Un solo controller nuovo in pairing mode: selezione automatica sicura
-    MAC=$(echo "$UNPAIRED" | tr -d ' ')
-elif [ "$unpaired_count" -gt 1 ]; then
-    # Controller multipli simultaneamente in pairing: risoluzione interattiva o override esplicito
-    if [ -t 0 ]; then
-        echo "Rilevati più controller in modalità pairing:"
-        i=1
-        for c in $UNPAIRED; do
-            echo "  $i) $c"
-            i=$((i + 1))
-        done
-        printf "Seleziona il controller da associare [1-%d]: " "$((i - 1))"
-        read -r choice
-        MAC=$(echo "$UNPAIRED" | awk -v n="$choice" '{print $n}')
-    else
-        echo "ERRORE: Rilevati più controller DualSense non associati. Imposta DUALSENSE_TARGET_MAC per l'esecuzione automatica."
-        exit 1
-    fi
-elif [ "$total_count" -eq 1 ]; then
-    # Nessun controller unpaired, ma un solo controller noto (re-pairing / riparazione)
-    MAC=$(echo "$CANDIDATES" | tr -d ' ')
+    printf '%s\n' "$CANDIDATES" | grep -Fxq "$DUALSENSE_TARGET_MAC" || fail "Target non rilevato fra i controller compatibili."
+    MAC=$DUALSENSE_TARGET_MAC
 else
-    # Controller multipli già associati: selezione interattiva o override esplicito
-    if [ -t 0 ]; then
-        echo "Rilevati controller multipli già noti a BlueZ:"
-        i=1
-        for c in $CANDIDATES; do
-            echo "  $i) $c"
-            i=$((i + 1))
-        done
-        printf "Seleziona il controller da riassociare [1-%d]: " "$((i - 1))"
-        read -r choice
-        MAC=$(echo "$CANDIDATES" | awk -v n="$choice" '{print $n}')
+    UNPAIRED=""
+    for candidate in $CANDIDATES; do
+        if ! bt info "$candidate" 2>/dev/null | grep -Eq '^[[:space:]]*Paired: yes[[:space:]]*$'; then
+            UNPAIRED="$UNPAIRED $candidate"
+        fi
+    done
+    set -- $UNPAIRED
+    if [ "$#" -eq 0 ]; then set -- $CANDIDATES; fi
+    if [ "$#" -eq 1 ]; then
+        MAC=$1
     else
-        echo "ERRORE: Rilevati controller multipli preesistenti. Imposta DUALSENSE_TARGET_MAC per l'esecuzione automatica."
-        exit 1
+        [ -t 0 ] || fail "Controller multipli: imposta DUALSENSE_TARGET_MAC."
+        index=1
+        for candidate do
+            echo "  $index) $candidate"
+            index=$((index + 1))
+        done
+        printf 'Seleziona il controller [1-%d]: ' "$#"
+        IFS= read -r choice || fail "Selezione interrotta (EOF)."
+        case "$choice" in ''|*[!0-9]*) fail "Scelta non valida.";; esac
+        # Rifiutare valori enormi prima dei confronti numerici shell.
+        [ "${#choice}" -le 3 ] && [ "$choice" -ge 1 ] && [ "$choice" -le "$#" ] || fail "Scelta fuori intervallo."
+        index=1
+        for candidate do
+            if [ "$index" -eq "$choice" ]; then MAC=$candidate; break; fi
+            index=$((index + 1))
+        done
     fi
 fi
-
-if [ -z "$MAC" ]; then
-    echo "Errore nella selezione del MAC target."
-    exit 1
-fi
-
-echo "Trovato controller DualSense con MAC: $MAC"
-echo "Avvio procedura di pairing e bonding crittografico..."
-
+valid_mac "$MAC" || fail "MAC selezionato non valido."
+echo "Avvio pairing per $MAC..."
 {
-    echo "agent on"
-    echo "default-agent"
-    echo "pairable on"
+    echo 'agent on'
+    echo 'default-agent'
+    echo 'pairable on'
     sleep 1
     echo "pair $MAC"
     sleep 2
     echo "trust $MAC"
     sleep 5
-    echo "quit"
-} | bluetoothctl >/dev/null 2>&1
+    echo quit
+} | timeout 15 bluetoothctl >/dev/null 2>&1
+bt pairable on >/dev/null 2>&1
 
-# Mantieni pairable on per il ciclo di re-negotiation della chiave
-bluetoothctl pairable on >/dev/null 2>&1
-
-# Helper di verifica stato accoppiato e fidato per lo specifico MAC
-check_mac_bonded_and_trusted() {
-    local target="$1"
-    local info
-    info=$(bluetoothctl info "$target" 2>/dev/null)
-    echo "$info" | grep -q "Paired: yes" && echo "$info" | grep -q "Trusted: yes"
-}
-
-# Helper di verifica creazione dispositivo di input kernel per lo specifico controller
 check_mac_input_device() {
-    local target_mac="$1"
-    local lower_mac
-    lower_mac=$(echo "$target_mac" | tr '[:upper:]' '[:lower:]')
-
-    # 1. Ricerca rigorosa blocco-per-blocco in /proc/bus/input/devices:
-    # Il singolo blocco del controller DEVE contenere il MAC specifico (in Uniq o Phys)
-    # E un handler di eventi di input (event*) effettivo nello STESSO record.
-    local proc_input="${PS5_PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
-    if [ -f "$proc_input" ]; then
-        if awk -v RS='' -v mac="$lower_mac" '
-            (index(tolower($0), "uniq=" mac) > 0 || index(tolower($0), "phys=" mac) > 0 || index(tolower($0), mac) > 0) {
-                if ($0 ~ /Handlers=.*event[0-9]+/) {
-                    found = 1
-                    exit 0
+    local target_mac lower_mac proc_input sys_input input val ev name
+    target_mac=$1
+    valid_mac "$target_mac" || return 1
+    lower_mac=$(printf '%s' "$target_mac" | tr '[:upper:]' '[:lower:]')
+    proc_input=${PS5_PROC_INPUT_DEVICES:-/proc/bus/input/devices}
+    if [ -r "$proc_input" ] && awk -v RS='' -v mac="$lower_mac" '
+        {
+            identity=0; handler=0; uniq=""; phys=""
+            count=split($0, lines, "\n")
+            for (i=1; i<=count; i++) {
+                line=tolower(lines[i])
+                if (line ~ /^u: uniq=/) uniq=substr(line, 9)
+                if (line ~ /^p: phys=/) phys=substr(line, 9)
+                if (line ~ /^h: handlers=/) {
+                    sub(/^h: handlers=/, "", line)
+                    n=split(line, fields, /[[:space:]]+/)
+                    for (j=1; j<=n; j++) if (fields[j] ~ /^event[0-9]+$/) handler=1
                 }
             }
-            END { exit (found ? 0 : 1) }
-        ' "$proc_input" 2>/dev/null; then
-            return 0
-        fi
-    fi
+            identity = (uniq != "" ? uniq == mac : phys == mac)
+            if (identity && handler) { found=1; exit }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$proc_input" 2>/dev/null; then return 0; fi
 
-    # 2. Ricerca gerarchica in sysfs su /sys/class/input:
-    # Segue e verifica la relazione diretta tra inputN, il suo descrittore uniq e il suo handler eventN.
-    # Non usa mai pattern globali non correlati.
-    local sys_input="${PS5_SYS_INPUT_DIR:-/sys/class/input}"
-    if [ -d "$sys_input" ]; then
-        for u in "$sys_input"/input*/device/uniq "$sys_input"/input*/uniq; do
-            if [ -f "$u" ]; then
-                local val
-                val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-                if [ "$val" = "$lower_mac" ]; then
-                    local in_dir
-                    in_dir=$(echo "$u" | sed 's#/device/uniq$##; s#/uniq$##')
-                    for ev in "$in_dir"/event[0-9]*; do
-                        if [ -e "$ev" ]; then
-                            return 0
-                        fi
-                    done
-                fi
-            fi
+    # /sys/class/input/inputN è il device input stesso: uniq e eventN
+    # devono appartenere a quel medesimo nodo. device/uniq può appartenere
+    # al parent HID e non prova l'identità del device input.
+    sys_input=${PS5_SYS_INPUT_DIR:-/sys/class/input}
+    for input in "$sys_input"/input*; do
+        [ -r "$input/uniq" ] || continue
+        val=$(tr '[:upper:]' '[:lower:]' < "$input/uniq")
+        [ "$val" = "$lower_mac" ] || continue
+        for ev in "$input"/event*; do
+            name=${ev##*/}
+            case "$name" in event*[!0-9]*|event) continue;; esac
+            [ -d "$ev" ] || continue
+            # Su sysfs reale, device dell'handler ritorna allo stesso inputN.
+            [ -d "$ev/device" ] || continue
+            [ "$(readlink -f "$ev/device")" = "$(readlink -f "$input")" ] && return 0
         done
-
-        for u in "$sys_input"/event*/device/uniq; do
-            if [ -f "$u" ]; then
-                local val
-                val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-                if [ "$val" = "$lower_mac" ]; then
-                    return 0
-                fi
-            fi
-        done
-    fi
-
+    done
     return 1
 }
 
-echo "Attesa conferma associazione, autorizzazione e creazione device input (fino a ${PS5_PAIR_TIMEOUT:-20}s)..."
 BONDED_AND_TRUSTED=0
+CONNECTED=0
 INPUT_CREATED=0
-
-for _ in $(seq 1 "${PS5_PAIR_TIMEOUT:-20}"); do
+# Scadenza wall-clock e numero massimo di tentativi. Ogni chiamata BlueZ
+# dura al massimo 5s; un tentativo già avviato può superare la scadenza.
+DEADLINE=$(( $(date +%s) + PAIR_TIMEOUT ))
+for _ in $(seq 1 "$PAIR_TIMEOUT"); do
+    [ "$(date +%s)" -lt "$DEADLINE" ] || break
     sleep 1
-    if [ "$BONDED_AND_TRUSTED" -eq 0 ]; then
-        if check_mac_bonded_and_trusted "$MAC"; then
-            BONDED_AND_TRUSTED=1
-        else
-            bluetoothctl trust "$MAC" >/dev/null 2>&1 || true
-            bluetoothctl connect "$MAC" >/dev/null 2>&1 || true
-        fi
+    INFO=$(bt info "$MAC" 2>/dev/null) || INFO=""
+    BONDED_AND_TRUSTED=0
+    CONNECTED=0
+    INPUT_CREATED=0
+    if printf '%s\n' "$INFO" | grep -Eq '^[[:space:]]*Paired: yes[[:space:]]*$' &&
+       printf '%s\n' "$INFO" | grep -Eq '^[[:space:]]*Trusted: yes[[:space:]]*$'; then
+        BONDED_AND_TRUSTED=1
     fi
-
-    if [ "$BONDED_AND_TRUSTED" -eq 1 ]; then
-        # Se il controller non risulta connesso a livello L2CAP/HID, ritenta la connessione attiva
-        if ! bluetoothctl info "$MAC" 2>/dev/null | grep -q "Connected: yes"; then
-            bluetoothctl connect "$MAC" >/dev/null 2>&1 || true
-        fi
-
-        if check_mac_input_device "$MAC"; then
-            INPUT_CREATED=1
-            break
-        fi
+    if printf '%s\n' "$INFO" | grep -Eq '^[[:space:]]*Connected: yes[[:space:]]*$'; then CONNECTED=1; fi
+    if [ "$BONDED_AND_TRUSTED" -eq 1 ] && [ "$CONNECTED" -eq 1 ] && check_mac_input_device "$MAC"; then
+        INPUT_CREATED=1
+        echo "SUCCESS: DualSense ($MAC) associato, autorizzato, connesso e registrato come device input kernel."
+        exit 0
     fi
+    if [ "$BONDED_AND_TRUSTED" -eq 0 ]; then bt trust "$MAC" >/dev/null 2>&1 || true; fi
+    if [ "$CONNECTED" -eq 0 ]; then bt connect "$MAC" >/dev/null 2>&1 || true; fi
 done
-
-if [ "$BONDED_AND_TRUSTED" -eq 1 ] && [ "$INPUT_CREATED" -eq 1 ]; then
-    echo "SUCCESS: DualSense ($MAC) associato, autorizzato e registrato come device input kernel (/dev/input)!"
-    echo "Driver hid-playstation attivo ed operativo per giochi, Steam ed emulatori."
-    exit 0
-elif [ "$BONDED_AND_TRUSTED" -eq 1 ] && [ "$INPUT_CREATED" -eq 0 ]; then
-    echo "ERRORE: Controller ($MAC) associato ma nessun dispositivo di input kernel (/dev/input) è stato creato entro il timeout."
-    echo "Possibili cause:"
-    echo " - Moduli kernel non caricati: esegui 'sudo modprobe hidp && sudo modprobe hid-playstation'"
-    echo " - Connessione L2CAP interrotta: premi il tasto PS una volta per completare l'aggancio."
-    exit 1
+if [ "$BONDED_AND_TRUSTED" -eq 0 ]; then
+    fail "Pairing o trust non confermati per $MAC entro il limite di attesa."
+elif [ "$CONNECTED" -eq 0 ]; then
+    fail "Controller $MAC associato e fidato ma non connesso entro il limite di attesa."
 else
-    echo "ERRORE: Pairing o autorizzazione non riusciti per il controller DualSense ($MAC)."
-    echo "Assicurati che sia in pairing mode (barra lampeggiante a doppio impulso) e riprova."
-    exit 1
+    fail "Controller $MAC connesso ma input kernel associato assente/incompleto in procfs e sysfs."
 fi
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-dualsense-pair"
