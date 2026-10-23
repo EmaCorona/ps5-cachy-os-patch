@@ -1377,9 +1377,54 @@ EOF
     "$loader" >/dev/null 2>&1 || rc4=$?
 
     if [ "$rc4" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
-        say_pass "Loader scenario 4: assenza di HW Bluetooth sul bus rileva l'assenza ed evita reload distruttivo (protezione xHCI)"
+        say_pass "Loader scenario 4a: assenza di HW Bluetooth sul bus rileva l'assenza ed evita reload distruttivo (protezione xHCI)"
     else
-        say_fail "Loader scenario 4: ha tentato il reload di btusb senza hardware presente sul bus"
+        say_fail "Loader scenario 4a: ha tentato il reload di btusb senza hardware presente sul bus"
+    fi
+
+    # Scenario 4b: presenza di dispositivo USB estraneo (non-Bluetooth) con VID 1286/0e8d ma senza interfaccia BT
+    rm -rf "$test_sandbox/sys_usb"/*
+    mkdir -p "$test_sandbox/sys_usb/dev_storage"
+    echo "1286" > "$test_sandbox/sys_usb/dev_storage/idVendor"
+    echo "9999" > "$test_sandbox/sys_usb/dev_storage/idProduct"
+    echo "08" > "$test_sandbox/sys_usb/dev_storage/bDeviceClass" # Mass Storage
+    : > "$log_ops"
+    local rc4b=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc4b=$?
+
+    if [ "$rc4b" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 4b: dispositivo USB estraneo (VID Marvell ma non-BT) correttamente scartato, reload evitato"
+    else
+        say_fail "Loader scenario 4b: falso positivo su hardware USB non-Bluetooth"
+    fi
+
+    # Scenario 4c: controller Bluetooth USB generico con descrittore standard e0:01:01 in sotto-interfaccia
+    rm -rf "$test_sandbox/sys_usb"/*
+    mkdir -p "$test_sandbox/sys_usb/dev_generic/1-1:1.0"
+    echo "0bda" > "$test_sandbox/sys_usb/dev_generic/idVendor"
+    echo "b85b" > "$test_sandbox/sys_usb/dev_generic/idProduct"
+    echo "e0" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceClass"
+    echo "01" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceSubClass"
+    echo "01" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceProtocol"
+    touch "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc4c=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc4c=$?
+
+    if [ "$rc4c" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
+        say_pass "Loader scenario 4c: controller Bluetooth USB standard con descrittore e0:01:01 correttamente riconosciuto"
+    else
+        say_fail "Loader scenario 4c: fallito riconoscimento controller Bluetooth USB standard e0:01:01"
     fi
 
     # Ripristina mock hardware USB Bluetooth per i test successivi
@@ -1507,6 +1552,129 @@ EOF
         say_pass "Loader scenario 7: controller valido verificato (interfaccia 00 e MAC valido), skip reload confermato"
     else
         say_fail "Loader scenario 7: fallita validazione controller valido su IF 00"
+    fi
+}
+
+test_dualsense_pair_scenarios() {
+    local pair_helper="$MOCK_ROOT/usr/local/sbin/ps5-dualsense-pair"
+    if [ ! -x "$pair_helper" ]; then
+        module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    fi
+
+    local test_sandbox="$SANDBOX_DIR/bt_pair_test"
+    rm -rf "$test_sandbox"
+    mkdir -p "$test_sandbox/bin" "$test_sandbox/proc" "$test_sandbox/sys_input"
+
+    # Mock bluetoothctl
+    local btctl_mock="$test_sandbox/bin/bluetoothctl"
+    local btctl_log="$test_sandbox/btctl.log"
+
+    cat << 'EOF' > "$btctl_mock"
+#!/bin/sh
+echo "btctl $*" >> "$BTCTL_LOG"
+case "$1" in
+    power|pairable)
+        exit 0
+        ;;
+    show)
+        echo "Pairable: yes"
+        exit 0
+        ;;
+    --timeout)
+        exit 0
+        ;;
+    devices)
+        if [ "$BTCTL_FOUND_DEVICE" = "1" ]; then
+            echo "Device 04:A3:43:11:22:33 Wireless Controller"
+        fi
+        exit 0
+        ;;
+    info)
+        local target="$2"
+        if [ "$BTCTL_PAIR_FAIL" = "1" ]; then
+            echo "Device $target"
+            echo "Paired: no"
+            echo "Trusted: no"
+        else
+            echo "Device $target"
+            echo "Paired: yes"
+            echo "Trusted: yes"
+            if [ "$BTCTL_CONNECTED" = "1" ]; then
+                echo "Connected: yes"
+            fi
+        fi
+        exit 0
+        ;;
+    trust|connect)
+        exit 0
+        ;;
+    *)
+        while read -r line; do
+            echo "pipe: $line" >> "$BTCTL_LOG"
+        done
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$btctl_mock"
+
+    # Scenario P1: assenza di bluetoothctl -> restituisce errore immediato
+    local rc_p1=0
+    PATH="/usr/empty/nonexistent" "$pair_helper" >/dev/null 2>&1 || rc_p1=$?
+    if [ "$rc_p1" -ne 0 ]; then
+        say_pass "Pair assistant scenario 1: assenza bluetoothctl restituisce errore immediato"
+    else
+        say_fail "Pair assistant scenario 1: non ha rilevato l'assenza di bluetoothctl"
+    fi
+
+    # Scenario P2: nessun controller DualSense rilevato durante la scansione -> errore
+    local rc_p2=0
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=0 \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p2=$?
+    if [ "$rc_p2" -ne 0 ]; then
+        say_pass "Pair assistant scenario 2: nessun controller rilevato restituisce errore esplicito"
+    else
+        say_fail "Pair assistant scenario 2: ha dichiarato successo con zero controller rilevati"
+    fi
+
+    # Scenario P3: controller associato (Paired: yes) ma NESSUN device di input creato nel kernel -> DEVE fallire (exit != 0)
+    # Verifica che il tool non dichiari falso successo quando manca il device di input kernel!
+    local rc_p3=0
+    : > "$test_sandbox/proc/input_devices"
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p3=$?
+
+    if [ "$rc_p3" -ne 0 ]; then
+        say_pass "Pair assistant scenario 3: controller associato ma privo di input device kernel fallisce (evitato falso successo)"
+    else
+        say_fail "Pair assistant scenario 3: ha dichiarato falso successo senza input device kernel presente"
+    fi
+
+    # Scenario P4: controller associato, fidato e input device kernel corrispondente presente -> SUCCESSO (exit 0)
+    local rc_p4=0
+    cat << 'EOF' > "$test_sandbox/proc/input_devices"
+I: Bus=0005 Vendor=054c Product=0ce6 Version=0000
+N: Name="DualSense Wireless Controller"
+P: Phys=00:11:22:33:44:55
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0001/input/input4
+U: Uniq=04:a3:43:11:22:33
+H: Handlers=event4 js0
+B: PROP=0
+EOF
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p4=$?
+
+    if [ "$rc_p4" -eq 0 ]; then
+        say_pass "Pair assistant scenario 4: controller associato e input device kernel convalidati con successo (exit 0)"
+    else
+        say_fail "Pair assistant scenario 4: fallita validazione con controller e input device validi"
     fi
 }
 
@@ -2041,6 +2209,7 @@ run_test test_module_wifi
 run_test test_module_wifi_stage_unit
 run_test test_module_bluetooth
 run_test test_bluetooth_loader_scenarios
+run_test test_dualsense_pair_scenarios
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope

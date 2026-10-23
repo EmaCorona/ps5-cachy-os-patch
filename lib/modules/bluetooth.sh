@@ -189,14 +189,59 @@ has_valid_hci() {
 }
 
 has_bt_usb_hardware() {
+    check_bt_interface() {
+        local target_dir="$1"
+        local icls isub ipro
+        icls=$(cat "$target_dir/bInterfaceClass" 2>/dev/null)
+        isub=$(cat "$target_dir/bInterfaceSubClass" 2>/dev/null)
+        ipro=$(cat "$target_dir/bInterfaceProtocol" 2>/dev/null)
+        case "$icls" in
+            e0|0xe0|E0|0xE0)
+                case "$isub" in
+                    01|0x01|1)
+                        case "$ipro" in
+                            01|0x01|1)
+                                return 0
+                                ;;
+                        esac
+                        ;;
+                esac
+                ;;
+        esac
+        return 1
+    }
+
     for dev in "$SYS_USB"/*; do
         [ -d "$dev" ] || continue
-        local cls vid
-        cls=$(cat "$dev/bDeviceClass" 2>/dev/null)
-        vid=$(cat "$dev/idVendor" 2>/dev/null)
-        if [ "$cls" = "e0" ] || [ "$vid" = "1286" ] || [ "$vid" = "0e8d" ]; then
+        local vid="" pid=""
+        [ -f "$dev/idVendor" ] && vid=$(cat "$dev/idVendor" 2>/dev/null)
+        [ -f "$dev/idProduct" ] && pid=$(cat "$dev/idProduct" 2>/dev/null)
+
+        # 1. Match selettivo su ID hardware Bluetooth PS5 noti:
+        # - Marvell Avastar 88W8997 (PS5 Fat/Digital): 1286:2059
+        # - MediaTek MT7921U / MT7922 (PS5 Slim / revisioni): 0e8d:0608, 0e8d:0616, 0e8d:7922, 0e8d:7961
+        if [ "$vid" = "1286" ] && [ "$pid" = "2059" ]; then
             return 0
         fi
+        if [ "$vid" = "0e8d" ]; then
+            case "$pid" in
+                0608|0616|7922|7961)
+                    return 0
+                    ;;
+            esac
+        fi
+
+        # 2. Match standard USB-IF per controller primario Bluetooth (class e0, subclass 01, protocol 01)
+        # Controlla il descrittore dell'interfaccia a livello del nodo o delle sotto-interfacce composite
+        if check_bt_interface "$dev"; then
+            return 0
+        fi
+
+        for iface in "$dev"/*:*; do
+            if [ -d "$iface" ] && check_bt_interface "$iface"; then
+                return 0
+            fi
+        done
     done
     return 1
 }
@@ -217,7 +262,7 @@ done
 
 # Se dopo l'attesa non c'è controller valido, controlla se l'hardware USB è fisicamente presente sul bus
 if ! has_bt_usb_hardware; then
-    ps5_log bluetooth warn "Nessun dispositivo USB Bluetooth rilevato sul bus: reload evitato per proteggere il controller host."
+    ps5_log bluetooth warn "Nessun hardware Bluetooth USB riconosciuto sul bus: reload evitato per proteggere il controller host xHCI."
     exit 1
 fi
 
@@ -413,27 +458,93 @@ echo "Avvio procedura di pairing e bonding crittografico..."
 # Mantieni pairable on per il ciclo di re-negotiation della chiave
 bluetoothctl pairable on >/dev/null 2>&1
 
-echo "Attesa conferma associazione e creazione device input (fino a 20s)..."
-BONDED=0
+# Helper di verifica stato accoppiato e fidato per lo specifico MAC
+check_mac_bonded_and_trusted() {
+    local target="$1"
+    local info
+    info=$(bluetoothctl info "$target" 2>/dev/null)
+    echo "$info" | grep -q "Paired: yes" && echo "$info" | grep -q "Trusted: yes"
+}
+
+# Helper di verifica creazione dispositivo di input kernel per lo specifico controller
+check_mac_input_device() {
+    local target_mac="$1"
+    local lower_mac
+    lower_mac=$(echo "$target_mac" | tr '[:upper:]' '[:lower:]')
+    local upper_mac
+    upper_mac=$(echo "$target_mac" | tr '[:lower:]' '[:upper:]')
+
+    # 1. Ricerca mirata in /proc/bus/input/devices tramite Uniq o Phys
+    local proc_input="${PS5_PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
+    if [ -f "$proc_input" ]; then
+        if grep -qiE "Uniq=(${lower_mac}|${upper_mac})" "$proc_input" 2>/dev/null; then
+            return 0
+        fi
+        if grep -qiE "Phys=.*(${lower_mac}|${upper_mac})" "$proc_input" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # 2. Ricerca in sysfs su /sys/class/input/input*/device/uniq
+    local sys_input="${PS5_SYS_INPUT_DIR:-/sys/class/input}"
+    for u in "$sys_input"/input*/device/uniq; do
+        if [ -f "$u" ]; then
+            local val
+            val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            if [ "$val" = "$lower_mac" ]; then
+                return 0
+            fi
+        fi
+    done
+
+    # 3. Fallback: verifica blocco input Bluetooth DualSense con controller connesso
+    if [ -f "$proc_input" ]; then
+        if awk -v rs='' -v ORS='\n\n' '/Bus=0005/ && (/DualSense/ || /Wireless Controller/)' "$proc_input" 2>/dev/null | grep -q "Bus=0005"; then
+            if bluetoothctl info "$target_mac" 2>/dev/null | grep -q "Connected: yes"; then
+                return 0
+            fi
+        fi
+    fi
+
+    return 1
+}
+
+echo "Attesa conferma associazione, autorizzazione e creazione device input (fino a 20s)..."
+BONDED_AND_TRUSTED=0
+INPUT_CREATED=0
+
 for _ in $(seq 1 20); do
     sleep 1
-    if bluetoothctl info "$MAC" 2>/dev/null | grep -q "Paired: yes"; then
-        BONDED=1
-        break
+    if [ "$BONDED_AND_TRUSTED" -eq 0 ]; then
+        if check_mac_bonded_and_trusted "$MAC"; then
+            BONDED_AND_TRUSTED=1
+        else
+            bluetoothctl trust "$MAC" >/dev/null 2>&1 || true
+            bluetoothctl connect "$MAC" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [ "$BONDED_AND_TRUSTED" -eq 1 ]; then
+        if check_mac_input_device "$MAC"; then
+            INPUT_CREATED=1
+            break
+        fi
     fi
 done
 
-if [ "$BONDED" -eq 1 ]; then
-    bluetoothctl trust "$MAC" >/dev/null 2>&1
-    echo "SUCCESS: DualSense associato e registrato con successo!"
-    if grep -qiE 'DualSense|Wireless Controller' /proc/bus/input/devices 2>/dev/null; then
-        echo "Device input kernel (hid-playstation) attivo ed operativo."
-    else
-        echo "Nota: se la barra luminosa è fissa ma l'input non risponde, premi il tasto PS una volta per completare l'aggancio."
-    fi
+if [ "$BONDED_AND_TRUSTED" -eq 1 ] && [ "$INPUT_CREATED" -eq 1 ]; then
+    echo "SUCCESS: DualSense ($MAC) associato, autorizzato e registrato come device input kernel (/dev/input)!"
+    echo "Driver hid-playstation attivo ed operativo per giochi, Steam ed emulatori."
     exit 0
+elif [ "$BONDED_AND_TRUSTED" -eq 1 ] && [ "$INPUT_CREATED" -eq 0 ]; then
+    echo "ERRORE: Controller ($MAC) associato ma nessun dispositivo di input kernel (/dev/input) è stato creato entro il timeout."
+    echo "Possibili cause:"
+    echo " - Moduli kernel non caricati: esegui 'sudo modprobe hidp && sudo modprobe hid-playstation'"
+    echo " - Connessione L2CAP interrotta: premi il tasto PS una volta per completare l'aggancio."
+    exit 1
 else
-    echo "Pairing non riuscito o timeout. Ripeti la procedura tenendo premuto Create + PS."
+    echo "ERRORE: Pairing o autorizzazione non riusciti per il controller DualSense ($MAC)."
+    echo "Assicurati che sia in pairing mode (barra lampeggiante a doppio impulso) e riprova."
     exit 1
 fi
 EOF
