@@ -1403,15 +1403,13 @@ EOF
         say_fail "Loader scenario 4b: falso positivo su hardware USB non-Bluetooth"
     fi
 
-    # Scenario 4c: controller Bluetooth USB generico con descrittore standard e0:01:01 in sotto-interfaccia
+    # Scenario 4c: dongle Bluetooth USB esterno generico (es. Realtek 0bda:b85b)
+    # Deve essere escluso dal recupero firmware interno PS5 per evitare stalli xHCI se la radio interna è assente
     rm -rf "$test_sandbox/sys_usb"/*
-    mkdir -p "$test_sandbox/sys_usb/dev_generic/1-1:1.0"
-    echo "0bda" > "$test_sandbox/sys_usb/dev_generic/idVendor"
-    echo "b85b" > "$test_sandbox/sys_usb/dev_generic/idProduct"
-    echo "e0" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceClass"
-    echo "01" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceSubClass"
-    echo "01" > "$test_sandbox/sys_usb/dev_generic/1-1:1.0/bInterfaceProtocol"
-    touch "$test_sandbox/create_hci"
+    mkdir -p "$test_sandbox/sys_usb/dev_dongle"
+    echo "0bda" > "$test_sandbox/sys_usb/dev_dongle/idVendor"
+    echo "b85b" > "$test_sandbox/sys_usb/dev_dongle/idProduct"
+    echo "e0" > "$test_sandbox/sys_usb/dev_dongle/bDeviceClass"
     : > "$log_ops"
     local rc4c=0
     OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
@@ -1421,10 +1419,31 @@ EOF
     PS5_PROC_MODULES="$test_sandbox/proc/modules" \
     "$loader" >/dev/null 2>&1 || rc4c=$?
 
-    if [ "$rc4c" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
-        say_pass "Loader scenario 4c: controller Bluetooth USB standard con descrittore e0:01:01 correttamente riconosciuto"
+    if [ "$rc4c" -ne 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 4c: dongle USB BT esterno generico escluso da recovery interno PS5 (xHCI protetto)"
     else
-        say_fail "Loader scenario 4c: fallito riconoscimento controller Bluetooth USB standard e0:01:01"
+        say_fail "Loader scenario 4c: ha erroneamente trattato un dongle esterno come hardware interno PS5"
+    fi
+
+    # Scenario 4d: hardware Bluetooth interno MediaTek MT7921U (PS5 Slim 0e8d:0608)
+    rm -rf "$test_sandbox/sys_usb"/*
+    mkdir -p "$test_sandbox/sys_usb/dev_mtk"
+    echo "0e8d" > "$test_sandbox/sys_usb/dev_mtk/idVendor"
+    echo "0608" > "$test_sandbox/sys_usb/dev_mtk/idProduct"
+    touch "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc4d=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_SYS_USB_DIR="$test_sandbox/sys_usb" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc4d=$?
+
+    if [ "$rc4d" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
+        say_pass "Loader scenario 4d: hardware interno MediaTek 0e8d:0608 (PS5 Slim) riconosciuto e recovery autorizzato"
+    else
+        say_fail "Loader scenario 4d: mancato riconoscimento hardware MediaTek interno PS5 Slim"
     fi
 
     # Ripristina mock hardware USB Bluetooth per i test successivi
@@ -1654,15 +1673,41 @@ EOF
         say_fail "Pair assistant scenario 3: ha dichiarato falso successo senza input device kernel presente"
     fi
 
-    # Scenario P4: controller associato, fidato e input device kernel corrispondente presente -> SUCCESSO (exit 0)
-    local rc_p4=0
+    # Scenario P3b: presenza di un ALTRO controller DualSense preesistente nel sistema (MAC A: 00:11:22:33:44:55)
+    # mentre stiamo associando il controller B (04:A3:43:11:22:33) il cui input device non è ancora stato creato.
+    # Verifica che il tool scarti il blocco di MAC A ed eviti qualsiasi falso successo multi-controller!
+    local rc_p3b=0
     cat << 'EOF' > "$test_sandbox/proc/input_devices"
 I: Bus=0005 Vendor=054c Product=0ce6 Version=0000
 N: Name="DualSense Wireless Controller"
 P: Phys=00:11:22:33:44:55
-S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0001/input/input4
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0001/input/input2
+U: Uniq=00:11:22:33:44:55
+H: Handlers=event2 js0
+B: PROP=0
+EOF
+    BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \
+    PS5_PROC_INPUT_DEVICES="$test_sandbox/proc/input_devices" \
+    PS5_SYS_INPUT_DIR="$test_sandbox/sys_input" \
+    PATH="$test_sandbox/bin:$PATH" \
+    "$pair_helper" >/dev/null 2>&1 || rc_p3b=$?
+
+    if [ "$rc_p3b" -ne 0 ]; then
+        say_pass "Pair assistant scenario 3b: presenza di controller preesistente con MAC diverso non genera falso successo"
+    else
+        say_fail "Pair assistant scenario 3b: falso successo generato da altro controller DualSense presente nel sistema"
+    fi
+
+    # Scenario P4: controller associato, fidato e input device kernel corrispondente presente -> SUCCESSO (exit 0)
+    local rc_p4=0
+    cat << 'EOF' >> "$test_sandbox/proc/input_devices"
+
+I: Bus=0005 Vendor=054c Product=0ce6 Version=0000
+N: Name="DualSense Wireless Controller"
+P: Phys=00:11:22:33:44:55
+S: Sysfs=/devices/virtual/misc/uhid/0005:054C:0CE6.0002/input/input4
 U: Uniq=04:a3:43:11:22:33
-H: Handlers=event4 js0
+H: Handlers=event4 js1
 B: PROP=0
 EOF
     BTCTL_LOG="$btctl_log" BTCTL_FOUND_DEVICE=1 BTCTL_PAIR_FAIL=0 BTCTL_CONNECTED=1 \

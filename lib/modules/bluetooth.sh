@@ -189,37 +189,17 @@ has_valid_hci() {
 }
 
 has_bt_usb_hardware() {
-    check_bt_interface() {
-        local target_dir="$1"
-        local icls isub ipro
-        icls=$(cat "$target_dir/bInterfaceClass" 2>/dev/null)
-        isub=$(cat "$target_dir/bInterfaceSubClass" 2>/dev/null)
-        ipro=$(cat "$target_dir/bInterfaceProtocol" 2>/dev/null)
-        case "$icls" in
-            e0|0xe0|E0|0xE0)
-                case "$isub" in
-                    01|0x01|1)
-                        case "$ipro" in
-                            01|0x01|1)
-                                return 0
-                                ;;
-                        esac
-                        ;;
-                esac
-                ;;
-        esac
-        return 1
-    }
-
     for dev in "$SYS_USB"/*; do
         [ -d "$dev" ] || continue
         local vid="" pid=""
         [ -f "$dev/idVendor" ] && vid=$(cat "$dev/idVendor" 2>/dev/null)
         [ -f "$dev/idProduct" ] && pid=$(cat "$dev/idProduct" 2>/dev/null)
 
-        # 1. Match selettivo su ID hardware Bluetooth PS5 noti:
-        # - Marvell Avastar 88W8997 (PS5 Fat/Digital): 1286:2059
-        # - MediaTek MT7921U / MT7922 (PS5 Slim / revisioni): 0e8d:0608, 0e8d:0616, 0e8d:7922, 0e8d:7961
+        # Rilevamento circoscritto rigorosamente all'hardware Bluetooth interno noto di PlayStation 5:
+        # - Marvell Avastar 88W8997 (PS5 Fat/Digital CFI-10xx/11xx/12xx): 1286:2059
+        # - MediaTek MT7921U / MT7922 (PS5 Slim CFI-20xx e revisioni): 0e8d:0608, 0e8d:0616, 0e8d:7922, 0e8d:7961
+        # Esclude espressamente dongle USB esterni generici per evitare reload distruttivi di btusb su xHCI Salina
+        # qualora la radio interna sia assente o non riconosciuta.
         if [ "$vid" = "1286" ] && [ "$pid" = "2059" ]; then
             return 0
         fi
@@ -230,18 +210,6 @@ has_bt_usb_hardware() {
                     ;;
             esac
         fi
-
-        # 2. Match standard USB-IF per controller primario Bluetooth (class e0, subclass 01, protocol 01)
-        # Controlla il descrittore dell'interfaccia a livello del nodo o delle sotto-interfacce composite
-        if check_bt_interface "$dev"; then
-            return 0
-        fi
-
-        for iface in "$dev"/*:*; do
-            if [ -d "$iface" ] && check_bt_interface "$iface"; then
-                return 0
-            fi
-        done
     done
     return 1
 }
@@ -471,40 +439,43 @@ check_mac_input_device() {
     local target_mac="$1"
     local lower_mac
     lower_mac=$(echo "$target_mac" | tr '[:upper:]' '[:lower:]')
-    local upper_mac
-    upper_mac=$(echo "$target_mac" | tr '[:lower:]' '[:upper:]')
 
-    # 1. Ricerca mirata in /proc/bus/input/devices tramite Uniq o Phys
+    # 1. Ricerca rigorosa blocco-per-blocco in /proc/bus/input/devices:
+    # Il singolo blocco del controller DEVE contenere il MAC specifico (in Uniq o Phys)
+    # E un handler di eventi di input (event*) effettivo. Esclude tassativamente corrispondenze con altri pad.
     local proc_input="${PS5_PROC_INPUT_DEVICES:-/proc/bus/input/devices}"
     if [ -f "$proc_input" ]; then
-        if grep -qiE "Uniq=(${lower_mac}|${upper_mac})" "$proc_input" 2>/dev/null; then
-            return 0
-        fi
-        if grep -qiE "Phys=.*(${lower_mac}|${upper_mac})" "$proc_input" 2>/dev/null; then
+        if awk -v RS='' -v mac="$lower_mac" '
+            tolower($0) ~ ("uniq=" mac) || tolower($0) ~ ("phys=.*" mac) {
+                if ($0 ~ /Handlers=.*event[0-9]+/) {
+                    found = 1
+                    exit 0
+                }
+            }
+            END { exit (found ? 0 : 1) }
+        ' "$proc_input" 2>/dev/null; then
             return 0
         fi
     fi
 
-    # 2. Ricerca in sysfs su /sys/class/input/input*/device/uniq
+    # 2. Ricerca in sysfs su /sys/class/input:
+    # Verifica che il device input corrisponda esattamente al MAC E possieda un handler event*
     local sys_input="${PS5_SYS_INPUT_DIR:-/sys/class/input}"
     for u in "$sys_input"/input*/device/uniq; do
         if [ -f "$u" ]; then
             local val
             val=$(cat "$u" 2>/dev/null | tr '[:upper:]' '[:lower:]')
             if [ "$val" = "$lower_mac" ]; then
-                return 0
+                local in_dir
+                in_dir=$(dirname "$(dirname "$u")")
+                for ev in "$in_dir"/event* "$sys_input"/event*; do
+                    if [ -e "$ev" ]; then
+                        return 0
+                    fi
+                done
             fi
         fi
     done
-
-    # 3. Fallback: verifica blocco input Bluetooth DualSense con controller connesso
-    if [ -f "$proc_input" ]; then
-        if awk -v rs='' -v ORS='\n\n' '/Bus=0005/ && (/DualSense/ || /Wireless Controller/)' "$proc_input" 2>/dev/null | grep -q "Bus=0005"; then
-            if bluetoothctl info "$target_mac" 2>/dev/null | grep -q "Connected: yes"; then
-                return 0
-            fi
-        fi
-    fi
 
     return 1
 }
@@ -525,6 +496,11 @@ for _ in $(seq 1 20); do
     fi
 
     if [ "$BONDED_AND_TRUSTED" -eq 1 ]; then
+        # Se il controller non risulta connesso a livello L2CAP/HID, ritenta la connessione attiva
+        if ! bluetoothctl info "$MAC" 2>/dev/null | grep -q "Connected: yes"; then
+            bluetoothctl connect "$MAC" >/dev/null 2>&1 || true
+        fi
+
         if check_mac_input_device "$MAC"; then
             INPUT_CREATED=1
             break
