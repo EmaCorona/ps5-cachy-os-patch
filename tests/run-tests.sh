@@ -1185,6 +1185,8 @@ test_runtime_logger() {
         "$MOCK_ROOT/usr/bin/gamescope-session-ps5"
         "$MOCK_ROOT/etc/profile.d/ps5-tty-session.sh"
         "$MOCK_ROOT/usr/bin/steamos-session-select"
+        "$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
+        "$MOCK_ROOT/usr/local/sbin/ps5-bt-diag"
     )
 
     local all_integrated=1
@@ -1213,17 +1215,32 @@ test_module_bluetooth() {
     local modprobe_conf="$MOCK_ROOT/etc/modprobe.d/ps5-bluetooth.conf"
     local fw_svc="$MOCK_ROOT/etc/systemd/system/ps5-bluetooth-firmware.service"
     local fw_link="$MOCK_ROOT/etc/systemd/system/bluetooth.target.wants/ps5-bluetooth-firmware.service"
+    local loader="$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
+    local diag="$MOCK_ROOT/usr/local/sbin/ps5-bt-diag"
+    local udev_rule="$MOCK_ROOT/etc/udev/rules.d/60-ps5-bluetooth.rules"
+    local main_conf="$MOCK_ROOT/etc/bluetooth/main.conf"
     local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
     local quiet_svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
     local quiet_link="$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
 
     if [ -f "$modprobe_conf" ] && grep -q "options btusb reset=0" "$modprobe_conf" && \
-       [ -f "$fw_svc" ] && grep -q "modprobe -r btusb" "$fw_svc" && \
+       [ -f "$fw_svc" ] && grep -q "ps5-bluetooth-firmware-loader" "$fw_svc" && \
        grep -q "WantedBy=bluetooth.target" "$fw_svc" && \
-       [ -L "$fw_link" ] && [ ! -e "$quiet" ] && [ ! -e "$quiet_svc" ] && [ ! -e "$quiet_link" ]; then
-        say_pass "Modulo bluetooth c3e6fd6 ripristinato: reset=0, reload firmware su bluetooth.target e bonifica ps5-bt-quiet"
+       [ -L "$fw_link" ] && \
+       [ -x "$loader" ] && sh -n "$loader" && grep -q "hci0" "$loader" && \
+       [ -x "$diag" ] && sh -n "$diag" && grep -q "bluetoothctl" "$diag" && \
+       [ -f "$udev_rule" ] && grep -q "1286" "$udev_rule" && \
+       [ -f "$main_conf" ] && grep -q "AutoEnable=true" "$main_conf" && \
+       [ ! -e "$quiet" ] && [ ! -e "$quiet_svc" ] && [ ! -e "$quiet_link" ]; then
+        say_pass "Modulo bluetooth configurato: reset=0, loader resiliente pre-BlueZ, udev 1286:2059, AutoEnable=true e ps5-bt-diag"
     else
-        say_fail "Modulo bluetooth non conforme alla baseline c3e6fd6 o bonifica ps5-bt-quiet fallita"
+        say_fail "Modulo bluetooth non conforme ai requisiti o file mancanti"
+    fi
+
+    if module_bluetooth_check "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1; then
+        say_pass "module_bluetooth_check ha convalidato la configurazione completa con successo"
+    else
+        say_fail "module_bluetooth_check ha fallito la validazione della configurazione"
     fi
 }
 
