@@ -1227,7 +1227,7 @@ test_module_bluetooth() {
        [ -f "$fw_svc" ] && grep -q "ps5-bluetooth-firmware-loader" "$fw_svc" && \
        grep -q "WantedBy=bluetooth.target" "$fw_svc" && \
        [ -L "$fw_link" ] && \
-       [ -x "$loader" ] && sh -n "$loader" && grep -q "hci0" "$loader" && \
+       [ -x "$loader" ] && sh -n "$loader" && grep -q "has_hci" "$loader" && \
        [ -x "$diag" ] && sh -n "$diag" && grep -q "bluetoothctl" "$diag" && \
        [ -f "$udev_rule" ] && grep -q "1286" "$udev_rule" && \
        [ -f "$main_conf" ] && grep -q "AutoEnable=true" "$main_conf" && \
@@ -1241,6 +1241,123 @@ test_module_bluetooth() {
         say_pass "module_bluetooth_check ha convalidato la configurazione completa con successo"
     else
         say_fail "module_bluetooth_check ha fallito la validazione della configurazione"
+    fi
+}
+
+test_bluetooth_loader_scenarios() {
+    local loader="$MOCK_ROOT/usr/local/sbin/ps5-bluetooth-firmware-loader"
+    if [ ! -x "$loader" ]; then
+        module_bluetooth_run "$MOCK_ROOT" "$MOCK_BOOT" >/dev/null 2>&1
+    fi
+
+    local test_sandbox="$SANDBOX_DIR/bt_loader_test"
+    rm -rf "$test_sandbox"
+    mkdir -p "$test_sandbox/bin" "$test_sandbox/sys_bt" "$test_sandbox/proc"
+
+    # Mock per modprobe e rfkill che registrano le invocazioni
+    local log_ops="$test_sandbox/ops.log"
+    cat << 'EOF' > "$test_sandbox/bin/modprobe"
+#!/bin/sh
+echo "modprobe $*" >> "$OP_LOG"
+case "$1" in
+    btusb)
+        if [ -f "$CREATE_HCI_FLAG" ]; then
+            mkdir -p "$SYS_BT_DIR/hci0"
+        fi
+        exit 0
+        ;;
+    -r)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+EOF
+    chmod +x "$test_sandbox/bin/modprobe"
+
+    cat << 'EOF' > "$test_sandbox/bin/rfkill"
+#!/bin/sh
+echo "rfkill $*" >> "$OP_LOG"
+exit 0
+EOF
+    chmod +x "$test_sandbox/bin/rfkill"
+
+    # Scenario 1: Controller hci0 già presente in sysfs
+    mkdir -p "$test_sandbox/sys_bt/hci0"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    : > "$log_ops"
+    local rc1=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc1=$?
+
+    if [ "$rc1" -eq 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 1: controller già presente, skip reload verificato senza scaricamento modulo"
+    else
+        say_fail "Loader scenario 1: ha tentato il reload distruttivo con controller già presente"
+    fi
+
+    # Scenario 2: btusb non presente in memoria -> probe iniziale da freddo
+    rm -rf "$test_sandbox/sys_bt/hci0"
+    : > "$test_sandbox/proc/modules"
+    touch "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc2=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc2=$?
+
+    if [ "$rc2" -eq 0 ] && grep -q "modprobe btusb" "$log_ops" && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 2: caricamento iniziale da freddo senza scaricamento previo"
+    else
+        say_fail "Loader scenario 2: probe iniziale da freddo fallito"
+    fi
+
+    # Scenario 3: btusb presente in memoria ma nessun controller -> ricaricamento controllato
+    rm -rf "$test_sandbox/sys_bt/hci0"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    touch "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc3=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc3=$?
+
+    if [ "$rc3" -eq 0 ] && grep -q "modprobe -r btusb" "$log_ops" && grep -q "modprobe btusb" "$log_ops"; then
+        say_pass "Loader scenario 3: recupero controllato con modprobe -r solo quando btusb è orfano di controller"
+    else
+        say_fail "Loader scenario 3: ricaricamento controllato fallito su btusb orfano"
+    fi
+
+    # Scenario 4: controller assente dopo tutti i tentativi -> fallimento con exit code 1
+    rm -rf "$test_sandbox/sys_bt/hci0"
+    rm -f "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc4=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc4=$?
+
+    if [ "$rc4" -ne 0 ]; then
+        say_pass "Loader scenario 4: controller assente rileva il guasto ed esce con stato non-zero (non maschera errori)"
+    else
+        say_fail "Loader scenario 4: ha mascherato con exit 0 l'assenza totale di controller Bluetooth"
+    fi
+
+    # Scenario 5: sblocco preventivo rfkill
+    if grep -q "rfkill unblock bluetooth" "$log_ops"; then
+        say_pass "Loader scenario 5: sblocco preventivo rfkill eseguito correttamente"
+    else
+        say_fail "Loader scenario 5: rfkill unblock bluetooth non invocato"
     fi
 }
 
@@ -1774,6 +1891,7 @@ run_test test_module_ethernet
 run_test test_module_wifi
 run_test test_module_wifi_stage_unit
 run_test test_module_bluetooth
+run_test test_bluetooth_loader_scenarios
 run_test test_module_fan
 run_test test_module_kde
 run_test test_module_gamescope

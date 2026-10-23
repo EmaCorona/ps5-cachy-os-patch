@@ -68,19 +68,29 @@ EOF
 # ps5-bluetooth-firmware-loader: inizializzazione sicura del controller Bluetooth PS5 pre-BlueZ
 [ -f /usr/local/lib/ps5-log.sh ] && . /usr/local/lib/ps5-log.sh 2>/dev/null || ps5_log() { :; }
 
+SYS_BT="${PS5_SYS_BLUETOOTH_DIR:-/sys/class/bluetooth}"
+PROC_MOD="${PS5_PROC_MODULES:-/proc/modules}"
+
+has_hci() {
+    for d in "$SYS_BT"/hci[0-9]*; do
+        [ -d "$d" ] && return 0
+    done
+    return 1
+}
+
 ps5_log bluetooth info "Verifica controller Bluetooth pre-BlueZ..."
 
 # Sblocca rfkill se presente un blocco software
 command -v rfkill >/dev/null 2>&1 && rfkill unblock bluetooth 2>/dev/null || true
 
 # Se un controller HCI è già presente in sysfs ed operativo, evita scaricamenti distruttivi
-if [ -d /sys/class/bluetooth/hci0 ]; then
-    ps5_log bluetooth info "Controller Bluetooth (hci0) già presente nel sistema: nessun reload necessario."
+if has_hci; then
+    ps5_log bluetooth info "Controller Bluetooth già presente nel sistema (sysfs): nessun reload necessario."
     exit 0
 fi
 
 # Se btusb non è ancora presente in memoria, caricalo normalmente
-if ! grep -q "^btusb " /proc/modules 2>/dev/null; then
+if ! grep -q "^btusb " "$PROC_MOD" 2>/dev/null; then
     ps5_log bluetooth info "Caricamento modulo kernel btusb..."
     if modprobe btusb; then
         ps5_log bluetooth info "Modulo kernel btusb caricato con successo."
@@ -101,18 +111,22 @@ else
 fi
 
 # Attesa breve per consentire l'enumerazione HCI e firmware download
+found=0
 for _ in 1 2 3; do
-    [ -d /sys/class/bluetooth/hci0 ] && break
+    if has_hci; then
+        found=1
+        break
+    fi
     sleep 1
 done
 
-if [ -d /sys/class/bluetooth/hci0 ]; then
-    ps5_log bluetooth info "Controller Bluetooth rilevato con successo (hci0)."
+if [ "$found" -eq 1 ]; then
+    ps5_log bluetooth info "Controller Bluetooth rilevato e verificato con successo in sysfs."
+    exit 0
 else
-    ps5_log bluetooth warn "Nessun controller Bluetooth registrato dopo la sequenza di avvio."
+    ps5_log bluetooth error "Nessun controller Bluetooth registrato in sysfs dopo la sequenza di avvio."
+    exit 1
 fi
-
-exit 0
 EOF
     sudo chmod 0755 "${cachy_mnt}/usr/local/sbin/ps5-bluetooth-firmware-loader"
 

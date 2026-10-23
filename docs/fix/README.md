@@ -10,6 +10,7 @@ Le schede seguono lo stile della documentazione del progetto: obiettivo, problem
 
 | Data | Commit | Problema documentato |
 | :--- | :--- | :--- |
+| 23 ottobre 2026 | [`fix/bluetooth-restore`](https://github.com/EmaCorona/ps5-cachy-os-patch/tree/fix/bluetooth-restore) | [Architettura Bluetooth PS5, loader resiliente e diagnostica](fix-bluetooth-restore.md) |
 | 21 ottobre 2026 | *in corso* | [Permessi di esecuzione master patcher CLI](fix-cli-permissions.md) |
 | 20 ottobre 2026 | [`881d76f55660`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/881d76f556602b4e507a76c420d2eb95b2bebdb7) | [KWin RA24, modeset atomico e stato obsoleto](fix-881d76f55660-kwin-ra24-modeset.md) |
 | 20 ottobre 2026 | [`3d41ab924438`](https://github.com/EmaCorona/ps5-cachy-os-patch/commit/3d41ab924438c9a71f8fab95ac53d44bcad188c8) | [Baseline video 1080p60 e servizio DRM intrusivo](fix-3d41ab924438-display-baseline.md) |
