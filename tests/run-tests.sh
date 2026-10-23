@@ -1219,6 +1219,7 @@ test_module_bluetooth() {
     local diag="$MOCK_ROOT/usr/local/sbin/ps5-bt-diag"
     local udev_rule="$MOCK_ROOT/etc/udev/rules.d/60-ps5-bluetooth.rules"
     local main_conf="$MOCK_ROOT/etc/bluetooth/main.conf"
+    local input_conf="$MOCK_ROOT/etc/bluetooth/input.conf"
     local quiet="$MOCK_ROOT/usr/local/sbin/ps5-bt-quiet"
     local quiet_svc="$MOCK_ROOT/etc/systemd/system/ps5-bt-quiet.service"
     local quiet_link="$MOCK_ROOT/etc/systemd/system/multi-user.target.wants/ps5-bt-quiet.service"
@@ -1227,12 +1228,15 @@ test_module_bluetooth() {
        [ -f "$fw_svc" ] && grep -q "ps5-bluetooth-firmware-loader" "$fw_svc" && \
        grep -q "WantedBy=bluetooth.target" "$fw_svc" && \
        [ -L "$fw_link" ] && \
-       [ -x "$loader" ] && sh -n "$loader" && grep -q "has_hci" "$loader" && \
+       [ -x "$loader" ] && sh -n "$loader" && grep -q "has_valid_hci" "$loader" && \
        [ -x "$diag" ] && sh -n "$diag" && grep -q "bluetoothctl" "$diag" && \
-       [ -f "$udev_rule" ] && grep -q "1286" "$udev_rule" && \
+       [ -f "$udev_rule" ] && grep -q 'ATTR{bInterfaceNumber}=="02"' "$udev_rule" && \
+       ! grep -q 'ATTR{bInterfaceNumber}=="01"' "$udev_rule" && \
        [ -f "$main_conf" ] && grep -q "AutoEnable=true" "$main_conf" && \
+       grep -q "JustWorksRepairing=always" "$main_conf" && \
+       [ -f "$input_conf" ] && grep -q "UserspaceHID=true" "$input_conf" && \
        [ ! -e "$quiet" ] && [ ! -e "$quiet_svc" ] && [ ! -e "$quiet_link" ]; then
-        say_pass "Modulo bluetooth configurato: reset=0, loader resiliente pre-BlueZ, udev 1286:2059, AutoEnable=true e ps5-bt-diag"
+        say_pass "Modulo bluetooth configurato: reset=0, loader resiliente pre-BlueZ, udev IF 02 anti-phantom, AutoEnable/JustWorksRepairing, input.conf e ps5-bt-diag"
     else
         say_fail "Modulo bluetooth non conforme ai requisiti o file mancanti"
     fi
@@ -1358,6 +1362,47 @@ EOF
         say_pass "Loader scenario 5: sblocco preventivo rfkill eseguito correttamente"
     else
         say_fail "Loader scenario 5: rfkill unblock bluetooth non invocato"
+    fi
+
+    # Scenario 6: presenza del solo controller fantasma (interfaccia 02 o MAC 00:00:00:00:00:00)
+    rm -rf "$test_sandbox/sys_bt"/*
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "02" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "00:00:00:00:00:00" > "$test_sandbox/sys_bt/hci0/address"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    rm -f "$test_sandbox/create_hci"
+    : > "$log_ops"
+    local rc6=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc6=$?
+
+    if [ "$rc6" -ne 0 ] && grep -q "modprobe -r btusb" "$log_ops"; then
+        say_pass "Loader scenario 6: controller fantasma su IF 02 rilevato e rifiutato; tentato recupero ed errore finale"
+    else
+        say_fail "Loader scenario 6: ha erroneamente considerato valido il controller fantasma su IF 02"
+    fi
+
+    # Scenario 7: presenza di un controller valido (interfaccia 00 e MAC valido)
+    rm -rf "$test_sandbox/sys_bt"/*
+    mkdir -p "$test_sandbox/sys_bt/hci0/device"
+    echo "00" > "$test_sandbox/sys_bt/hci0/device/bInterfaceNumber"
+    echo "A0:B1:C2:D3:E4:F5" > "$test_sandbox/sys_bt/hci0/address"
+    echo "btusb 57344 0" > "$test_sandbox/proc/modules"
+    : > "$log_ops"
+    local rc7=0
+    OP_LOG="$log_ops" SYS_BT_DIR="$test_sandbox/sys_bt" CREATE_HCI_FLAG="$test_sandbox/create_hci" \
+    PATH="$test_sandbox/bin:$PATH" \
+    PS5_SYS_BLUETOOTH_DIR="$test_sandbox/sys_bt" \
+    PS5_PROC_MODULES="$test_sandbox/proc/modules" \
+    "$loader" >/dev/null 2>&1 || rc7=$?
+
+    if [ "$rc7" -eq 0 ] && ! grep -q "modprobe -r" "$log_ops"; then
+        say_pass "Loader scenario 7: controller valido verificato (interfaccia 00 e MAC valido), skip reload confermato"
+    else
+        say_fail "Loader scenario 7: fallita validazione controller valido su IF 00"
     fi
 }
 
